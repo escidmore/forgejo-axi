@@ -1,5 +1,9 @@
-import { readFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer as createHttpsServer } from 'node:https';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -220,9 +224,29 @@ describe('HTTP security behavior', () => {
   });
 
   it('uses a custom CA for self-signed HTTPS', async () => {
+    const certDir = await mkdtemp(join(tmpdir(), 'forgejo-axi-test-ca-'));
+    const keyPath = join(certDir, 'localhost-key.pem');
+    const certPath = join(certDir, 'localhost-cert.pem');
+    await promisify(execFile)('openssl', [
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+      '-days',
+      '2',
+      '-subj',
+      '/CN=localhost',
+      '-addext',
+      'subjectAltName=DNS:localhost,IP:127.0.0.1',
+    ]);
     const [key, cert] = await Promise.all([
-      readFile(new URL('./fixtures/localhost-key.pem', import.meta.url)),
-      readFile(new URL('./fixtures/localhost-cert.pem', import.meta.url)),
+      readFile(keyPath),
+      readFile(certPath),
     ]);
     const server = createHttpsServer({ key, cert }, (_request, response) =>
       json(response, 200, { version: '15.0.5' }),
@@ -241,8 +265,7 @@ describe('HTTP security behavior', () => {
       const withCa = await resolveConnection(
         {
           baseUrl,
-          caFile: new URL('./fixtures/localhost-cert.pem', import.meta.url)
-            .pathname,
+          caFile: certPath,
         },
         {},
       );
@@ -255,6 +278,7 @@ describe('HTTP security behavior', () => {
     } finally {
       server.close();
       await once(server, 'close');
+      await rm(certDir, { recursive: true, force: true });
     }
   });
 });
