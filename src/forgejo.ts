@@ -330,7 +330,13 @@ export class ForgejoService {
     const checks = await this.checks(repo, number);
     const reasons: string[] = [];
     if (pull.mergeable !== true) reasons.push('forgejo_not_mergeable');
-    if (!checks.passes) reasons.push(`checks_${checks.required_state}`);
+    if (!checks.passes) {
+      reasons.push(
+        checks.required_state === 'not_required'
+          ? `checks_${checks.state}`
+          : `checks_${checks.required_state}`,
+      );
+    }
     return {
       number,
       url: pull.url,

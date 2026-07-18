@@ -19,13 +19,13 @@ forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merg
 forgejo-axi pr merged --repo OWNER/REPO NUMBER
 ```
 
-Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. Authentication resolves `--token-env` first, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` only when the base URL came from `FORGEJO_BASE_URL`; tokens are never accepted as command arguments or emitted.
+Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. Authentication resolves `--token-env` first, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` only when the base URL came from `FORGEJO_BASE_URL`; an explicitly named `--token-env` variable that is unset or empty is a usage error, and tokens are never accepted as command arguments or emitted.
 
 `HOST_KEY` is the uppercase URL host including a non-default port, with every non-alphanumeric character replaced by `_`. HTTP authentication is accepted only for loopback hosts. Base URLs may contain a path prefix; credentials, query strings, fragments, encoded separators/dot segments, and cross-origin redirects are rejected.
 
 ## Output and exits
 
-Default stdout is one concise TOON document. `--json` emits the same data model as one JSON document; no output field changes by mode. Diagnostics/progress use stderr only. Exit `0` means success or an idempotent no-op, `1` means runtime/API/security failure, and `2` means invalid invocation. Errors have this stable shape:
+Default stdout is one concise TOON document. `--json` emits the same data model as one JSON document; both modes carry the same fields with the same meanings, though TOON list views stay concise by displaying a capped number of rows (reported via `page_info`) while JSON mode always displays every fetched entry. Diagnostics/progress use stderr only. Exit `0` means success or an idempotent no-op, `1` means runtime/API/security failure, and `2` means invalid invocation. Errors have this stable shape:
 
 ```json
 {

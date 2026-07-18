@@ -149,16 +149,26 @@ function resolveToken(
   explicitName: string | undefined,
   env: NodeJS.ProcessEnv,
 ): { token?: string; source: string | null } {
-  const names = explicitName
-    ? [explicitName]
-    : [
-        `FORGEJO_TOKEN_${hostKey(baseUrl)}`,
-        ...(baseSource === 'env' ? ['FORGEJO_TOKEN'] : []),
-      ];
-  for (const name of names) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-      throw usageError(`Invalid environment variable name: ${name}`);
+  if (explicitName !== undefined) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(explicitName)) {
+      throw usageError(`Invalid environment variable name: ${explicitName}`);
     }
+    const value = env[explicitName];
+    if (!value) {
+      throw usageError(
+        `Token environment variable ${explicitName} is unset or empty`,
+        [
+          `Export ${explicitName} with a Forgejo token or omit --token-env to use host-scoped defaults`,
+        ],
+      );
+    }
+    return { token: value, source: explicitName };
+  }
+  const names = [
+    `FORGEJO_TOKEN_${hostKey(baseUrl)}`,
+    ...(baseSource === 'env' ? ['FORGEJO_TOKEN'] : []),
+  ];
+  for (const name of names) {
     const value = env[name];
     if (value) return { token: value, source: name };
   }

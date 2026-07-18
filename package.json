@@ -1,6 +1,7 @@
 {
   "name": "forgejo-axi",
   "version": "0.1.0",
+  "private": true,
   "description": "Agent-facing CLI boundary for Forgejo pull request lifecycles",
   "keywords": [
     "axi",

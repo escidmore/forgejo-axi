@@ -68,6 +68,17 @@ describe('URL and authentication configuration', () => {
     expect(environmental.token).toBe('generic');
   });
 
+  it('rejects an explicitly selected token variable that is unset or empty', async () => {
+    for (const env of [{}, { TOKEN: '' }]) {
+      await expect(
+        resolveConnection(
+          { baseUrl: 'https://forgejo.example', tokenEnv: 'TOKEN' },
+          env,
+        ),
+      ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+    }
+  });
+
   it('rejects authenticated non-loopback HTTP', async () => {
     await expect(
       resolveConnection(
