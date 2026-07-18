@@ -44,6 +44,8 @@ A pull request identity is `{number, url, api_url, state, draft, title, head, ba
 
 Checks are `{sha, reported, state, statuses, required, required_state, passes, protection}`. `state` is `none|pending|failure|success`; an empty set is always `reported=0,state=none`. Each required pattern is `missing|pending|failure|success`; only `success` passes. `required_state` is `not_required|missing|pending|failure|success`, so missing required contexts can never be green.
 
+Mergeability is `{number, url, head_sha, forgejo_mergeable, checks_pass, mergeable, reasons}`. `mergeable` is true only when Forgejo reports the pull mergeable and checks pass. `reasons` explains a false result with `already_merged`, `forgejo_not_mergeable`, and `checks_<state>` — the required state, or the overall state when no contexts are required.
+
 Merge requires `--expected-head`; both the preflight and Forgejo's atomic `head_commit_id` guard are used. A successful or idempotently repeated merge returns merged-state proof `{merged, number, url, head_sha, merge_commit_sha, merged_at, merged_by}`. A head race is `HEAD_CHANGED`, never retried against the new head.
 
 Capabilities are explicit booleans with a probe source. Forgejo 15 reports Actions job logs unsupported; Forgejo 16 may report them supported without changing commit-status/check semantics.
