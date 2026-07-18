@@ -1,0 +1,325 @@
+import http, { type IncomingHttpHeaders } from 'node:http';
+import https from 'node:https';
+import { appendPath, type ConnectionConfig } from './config.js';
+import { ForgejoAxiError } from './errors.js';
+
+export interface HttpResponse<T> {
+  status: number;
+  headers: IncomingHttpHeaders;
+  data: T;
+}
+
+export interface RequestInput {
+  method?: string;
+  path?: string;
+  url?: URL;
+  query?: Record<string, string | number | boolean | undefined>;
+  body?: unknown;
+  accept?: string;
+}
+
+export interface Paginated<T> {
+  items: T[];
+  complete: boolean;
+  pages: number;
+  total: number | null;
+}
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const MAX_REDIRECTS = 5;
+const MAX_PAGES = 100;
+const PAGE_SIZE = 50;
+
+export class ForgejoHttpClient {
+  constructor(private readonly config: ConnectionConfig) {}
+
+  api<T>(input: Omit<RequestInput, 'url'>): Promise<HttpResponse<T>> {
+    const path = input.path ?? '';
+    return this.request<T>({
+      ...input,
+      url: appendPath(this.config.apiUrl, path),
+    });
+  }
+
+  root<T>(input: Omit<RequestInput, 'url'>): Promise<HttpResponse<T>> {
+    const path = input.path ?? '';
+    return this.request<T>({
+      ...input,
+      url: appendPath(this.config.baseUrl, path),
+    });
+  }
+
+  async paginate<T>(
+    path: string,
+    query: Record<string, string | number | boolean | undefined> = {},
+  ): Promise<Paginated<T>> {
+    const items: T[] = [];
+    let total: number | null = null;
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const response = await this.api<T[]>({
+        path,
+        query: { ...query, page, limit: PAGE_SIZE },
+      });
+      if (!Array.isArray(response.data)) {
+        throw new ForgejoAxiError(
+          'Forgejo returned a non-array pagination response',
+          'INVALID_RESPONSE',
+        );
+      }
+      const headerTotal = parseTotal(response.headers['x-total-count']);
+      if (headerTotal !== null) total = headerTotal;
+      items.push(...response.data);
+      const linkHasNext = hasNextLink(response.headers['link']);
+      const doneByTotal = total !== null && items.length >= total;
+      const doneByShortPage = response.data.length < PAGE_SIZE;
+      if (doneByTotal || (!linkHasNext && doneByShortPage)) {
+        return {
+          items,
+          complete: true,
+          pages: page,
+          total: total ?? items.length,
+        };
+      }
+      if (!linkHasNext && response.data.length === 0) {
+        return {
+          items,
+          complete: true,
+          pages: page,
+          total: total ?? items.length,
+        };
+      }
+    }
+    return { items, complete: false, pages: MAX_PAGES, total };
+  }
+
+  private request<T>(input: RequestInput): Promise<HttpResponse<T>> {
+    const initial = input.url;
+    if (!initial)
+      throw new ForgejoAxiError('Request URL is missing', 'INTERNAL_ERROR');
+    const url = initial;
+    for (const [key, value] of Object.entries(input.query ?? {})) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+    const method = (input.method ?? 'GET').toUpperCase();
+    const body =
+      input.body === undefined ? undefined : JSON.stringify(input.body);
+    return this.requestWithRedirects<T>(url, method, body, input.accept, 0);
+  }
+
+  private async requestWithRedirects<T>(
+    url: URL,
+    method: string,
+    body: string | undefined,
+    accept: string | undefined,
+    redirects: number,
+  ): Promise<HttpResponse<T>> {
+    const response = await this.requestOnce(url, method, body, accept);
+    if (!REDIRECT_STATUSES.has(response.status))
+      return this.validate<T>(response);
+    const location = firstHeader(response.headers['location']);
+    if (!location) {
+      throw new ForgejoAxiError(
+        'Redirect response omitted Location',
+        'INVALID_REDIRECT',
+      );
+    }
+    if (redirects >= MAX_REDIRECTS) {
+      throw new ForgejoAxiError('Too many redirects', 'INVALID_REDIRECT');
+    }
+    const target = resolveRedirectTarget(location, url);
+    if (target.origin !== url.origin) {
+      throw new ForgejoAxiError(
+        'Refusing cross-origin redirect',
+        'CROSS_ORIGIN_REDIRECT',
+        { details: { from: safeUrl(url), to: safeUrl(target) } },
+      );
+    }
+    const redirectedMethod = response.status === 303 ? 'GET' : method;
+    return this.requestWithRedirects<T>(
+      target,
+      redirectedMethod,
+      redirectedMethod === 'GET' ? undefined : body,
+      accept,
+      redirects + 1,
+    );
+  }
+
+  private requestOnce(
+    url: URL,
+    method: string,
+    body: string | undefined,
+    accept: string | undefined,
+  ): Promise<HttpResponse<unknown>> {
+    const headers: Record<string, string | number> = {
+      accept: accept ?? 'application/json',
+      'user-agent': 'forgejo-axi/0.1.0',
+    };
+    if (this.config.token)
+      headers['authorization'] = `token ${this.config.token}`;
+    if (body !== undefined) {
+      headers['content-type'] = 'application/json';
+      headers['content-length'] = Buffer.byteLength(body);
+    }
+    const options: https.RequestOptions = {
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      method,
+      headers,
+      signal: AbortSignal.timeout(this.config.timeoutMs),
+    };
+    if (this.config.ca) options.ca = this.config.ca;
+    const requestModule = url.protocol === 'https:' ? https : http;
+
+    return new Promise((resolve, reject) => {
+      const request = requestModule.request(options, (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer | string) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const data = parseBody(text, response.headers['content-type']);
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            data: redactData(data, this.config.token),
+          });
+        });
+      });
+      request.on('error', (error) => reject(this.networkError(error)));
+      if (body !== undefined) request.write(body);
+      request.end();
+    });
+  }
+
+  private validate<T>(response: HttpResponse<unknown>): HttpResponse<T> {
+    if (response.status >= 200 && response.status < 300) {
+      return response as HttpResponse<T>;
+    }
+    const message = redact(responseMessage(response.data), this.config.token);
+    const code = statusCode(response.status, message);
+    throw new ForgejoAxiError(
+      message
+        ? `Forgejo API request failed: ${message}`
+        : 'Forgejo API request failed',
+      code,
+      { details: { status: response.status } },
+    );
+  }
+
+  private networkError(error: Error): ForgejoAxiError {
+    const code =
+      error.name === 'TimeoutError' || error.name === 'AbortError'
+        ? 'TIMEOUT'
+        : 'NETWORK_ERROR';
+    return new ForgejoAxiError(
+      code === 'TIMEOUT'
+        ? 'Forgejo request timed out'
+        : 'Unable to reach Forgejo',
+      code,
+    );
+  }
+}
+
+function parseBody(
+  text: string,
+  contentType: string | string[] | undefined,
+): unknown {
+  if (text.length === 0) return null;
+  if (firstHeader(contentType)?.includes('json')) {
+    try {
+      return JSON.parse(text) as unknown;
+    } catch {
+      throw new ForgejoAxiError(
+        'Forgejo returned invalid JSON',
+        'INVALID_RESPONSE',
+      );
+    }
+  }
+  return text;
+}
+
+function responseMessage(data: unknown): string | null {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const value = (data as Record<string, unknown>)['message'];
+  return typeof value === 'string' ? value.slice(0, 500) : null;
+}
+
+function redact(
+  message: string | null,
+  token: string | undefined,
+): string | null {
+  if (!message || !token) return message;
+  return message.split(token).join('[REDACTED]');
+}
+
+function redactData(data: unknown, token: string | undefined): unknown {
+  if (!token) return data;
+  if (typeof data === 'string') return redact(data, token);
+  if (Array.isArray(data)) return data.map((value) => redactData(value, token));
+  if (data && typeof data === 'object') {
+    return Object.fromEntries(
+      Object.entries(data).map(([key, value]) => [
+        key,
+        redactData(value, token),
+      ]),
+    );
+  }
+  return data;
+}
+
+function statusCode(status: number, message: string | null): string {
+  if (status === 401) return 'AUTH_REQUIRED';
+  if (status === 403) return 'FORBIDDEN';
+  if (status === 404) return 'NOT_FOUND';
+  if (
+    status === 409 &&
+    /head (?:is )?out of date|head (?:changed|mismatch)|commit (?:changed|mismatch|out of date)/i.test(
+      message ?? '',
+    )
+  )
+    return 'HEAD_CHANGED';
+  if (status === 409) return 'CONFLICT';
+  if (status === 422) return 'VALIDATION_FAILED';
+  if (status === 429) return 'RATE_LIMITED';
+  return 'API_ERROR';
+}
+
+function parseTotal(value: string | string[] | undefined): number | null {
+  const first = firstHeader(value);
+  if (!first || !/^\d+$/.test(first)) return null;
+  return Number(first);
+}
+
+function hasNextLink(value: string | string[] | undefined): boolean {
+  return /rel="next"/.test(firstHeader(value) ?? '');
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function resolveRedirectTarget(location: string, current: URL): URL {
+  try {
+    const target = new URL(location, current);
+    if (target.username || target.password) {
+      throw new ForgejoAxiError(
+        'Redirect Location must not contain credentials',
+        'INVALID_REDIRECT',
+      );
+    }
+    return target;
+  } catch (error) {
+    if (error instanceof ForgejoAxiError) throw error;
+    throw new ForgejoAxiError(
+      'Redirect Location is invalid',
+      'INVALID_REDIRECT',
+    );
+  }
+}
+
+function safeUrl(url: URL): string {
+  return `${url.protocol}//${url.host}${url.pathname}`;
+}

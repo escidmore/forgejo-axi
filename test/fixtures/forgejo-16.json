@@ -1,0 +1,31 @@
+{
+  "version": { "version": "16.0.0+gitea-1.23.0" },
+  "swagger": {
+    "paths": {
+      "/repos/{owner}/{repo}/pulls": {},
+      "/repos/{owner}/{repo}/pulls/{index}/merge": {},
+      "/repos/{owner}/{repo}/statuses/{sha}": {},
+      "/repos/{owner}/{repo}/branches/{branch}": {},
+      "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs": {}
+    },
+    "definitions": {
+      "MergePullRequestOption": {
+        "properties": { "head_commit_id": { "type": "string" } }
+      }
+    }
+  },
+  "pull": {
+    "number": 42,
+    "state": "open",
+    "draft": false,
+    "title": "Fix race",
+    "body": "Details",
+    "head": { "ref": "fix/race", "sha": "abc123" },
+    "base": { "ref": "main", "sha": "base123" },
+    "mergeable": true,
+    "merged": false,
+    "merge_commit_sha": null,
+    "merged_at": null,
+    "merged_by": null
+  }
+}
