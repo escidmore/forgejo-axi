@@ -19,17 +19,19 @@ No npm package or release is published yet.
 ```console
 export FORGEJO_BASE_URL=https://forgejo.example/git
 export FORGEJO_REPOSITORY=owner/repo
-export FORGEJO_TOKEN_FORGEJO_EXAMPLE=...
+export FORGEJO_TOKEN_FORGEJO_2E_EXAMPLE=...
 forgejo-axi status
 ```
 
-Tokens are read only from environment variables: `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` only when the base URL came from `FORGEJO_BASE_URL`. Tokens are never accepted as arguments or emitted. `FORGEJO_TIMEOUT_MS` and `FORGEJO_CA_FILE` configure request timeouts and a custom CA; equivalent flags are available on every command.
+Tokens are read only from environment variables: `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` only when the base URL came from `FORGEJO_BASE_URL`. Host keys hex-encode punctuation (`forgejo.example` becomes `FORGEJO_2E_EXAMPLE`) to prevent look-alike hosts from sharing credentials. Tokens are never accepted as arguments or emitted. `FORGEJO_TIMEOUT_MS` configures request timeouts; `FORGEJO_CA_FILE` supplies a replacement CA trust bundle rather than extending the platform store.
 
 ## Pull request lifecycle
 
 ```console
 forgejo-axi repo view --repo owner/repo
 forgejo-axi pr find --repo owner/repo --head feature --base main
+forgejo-axi pr list --repo owner/repo --fields number,title,state,head
+forgejo-axi pr view --repo owner/repo 42 --full
 forgejo-axi pr create --repo owner/repo --title 'Add feature' --head feature --base main
 forgejo-axi pr checks --repo owner/repo 42 --json
 forgejo-axi pr mergeability --repo owner/repo 42
@@ -39,12 +41,13 @@ forgejo-axi pr merged --repo owner/repo 42
 
 `pr create` and `pr update` reconcile existing state instead of duplicating mutations. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
 
-Lists fetch all Forgejo pages up to a documented safety ceiling and report completeness in `page_info`. TOON displays 30 items by default; `--limit`, `--full`, and `--json` control display without hiding whether fetching was complete.
+Lists fetch up to 100 Forgejo pages of 50 rows (5000 rows) and report completeness in `page_info`. TOON displays 30 rows by default and hints at `--full` when truncated; JSON displays every fetched row, and `--limit` is rejected with `--json`. Pull request lists use four fields by default and accept `--fields LIST|all`.
 
 ## Raw API and capabilities
 
 ```console
 forgejo-axi api GET 'repos/owner/repo/pulls?state=open'
+forgejo-axi api GET repos/owner/repo/pulls --paginate --full
 forgejo-axi api PATCH repos/owner/repo/pulls/42 --data '{"title":"New title"}'
 ```
 

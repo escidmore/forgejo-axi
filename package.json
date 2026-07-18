@@ -33,7 +33,7 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:smoke": "npm run build && node dist/bin/forgejo-axi.js --help >/dev/null && node dist/bin/forgejo-axi.js --version",
+    "test:smoke": "npm run build && node scripts/smoke.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run test:smoke",
     "prepublishOnly": "npm run check"
   },

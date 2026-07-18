@@ -1,9 +1,10 @@
 import { usageError } from './errors.js';
 
-export type FlagKind = 'boolean' | 'value';
+type FlagKind = 'boolean' | 'value';
 export type FlagSpec = Readonly<Record<string, FlagKind>>;
 
 export interface ParsedArgs {
+  command: string;
   flags: Record<string, string | boolean>;
   positionals: string[];
 }
@@ -60,7 +61,7 @@ export function parseArgs(
     if (inlineValue === undefined) index += 1;
   }
 
-  return { flags, positionals };
+  return { command, flags, positionals };
 }
 
 export function stringFlag(
@@ -78,7 +79,9 @@ export function boolFlag(parsed: ParsedArgs, name: string): boolean {
 export function requireFlag(parsed: ParsedArgs, name: string): string {
   const value = stringFlag(parsed, name);
   if (value === undefined || value.length === 0) {
-    throw usageError(`${name} is required`);
+    throw usageError(`${name} is required`, [
+      `Run \`forgejo-axi ${parsed.command} --help\``,
+    ]);
   }
   return value;
 }
@@ -92,10 +95,15 @@ export function requireOnePositional(
       parsed.positionals.length === 0
         ? `${label} is required`
         : `Unexpected arguments: ${parsed.positionals.slice(1).join(' ')}`,
+      [`Run \`forgejo-axi ${parsed.command} --help\``],
     );
   }
   const value = parsed.positionals[0];
-  if (!value) throw usageError(`${label} is required`);
+  if (!value) {
+    throw usageError(`${label} is required`, [
+      `Run \`forgejo-axi ${parsed.command} --help\``,
+    ]);
+  }
   return value;
 }
 

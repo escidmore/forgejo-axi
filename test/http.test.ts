@@ -13,7 +13,8 @@ import {
   resolveConnection,
 } from '../src/config.js';
 import { ForgejoAxiError } from '../src/errors.js';
-import { ForgejoHttpClient } from '../src/http.js';
+import { ForgejoHttpClient, requestHostname } from '../src/http.js';
+import { testSubprocessEnv } from './environment.js';
 import { json, startServer, type FakeServer } from './server.js';
 
 const servers: FakeServer[] = [];
@@ -33,7 +34,15 @@ describe('URL and authentication configuration', () => {
     );
     expect(() => appendPath(base, 'api/v1/../admin')).toThrow();
     expect(() => appendPath(base, 'api/v1/repos#token')).toThrow();
-    expect(hostKey(base)).toBe('FORGEJO_EXAMPLE_8443');
+    expect(hostKey(base)).toBe('FORGEJO_2E_EXAMPLE_3A_8443');
+  });
+
+  it('derives collision-resistant host-scoped token keys', () => {
+    const dotted = canonicalizeBaseUrl('https://forgejo.example.com');
+    const dashed = canonicalizeBaseUrl('https://forgejo-example.com');
+    expect(hostKey(dotted)).not.toBe(hostKey(dashed));
+    expect(hostKey(dotted)).toBe('FORGEJO_2E_EXAMPLE_2E_COM');
+    expect(hostKey(dashed)).toBe('FORGEJO_2D_EXAMPLE_2E_COM');
   });
 
   it.each([
@@ -52,12 +61,12 @@ describe('URL and authentication configuration', () => {
     const scoped = await resolveConnection(
       { baseUrl: 'https://forgejo.example:8443' },
       {
-        FORGEJO_TOKEN_FORGEJO_EXAMPLE_8443: 'scoped',
+        FORGEJO_TOKEN_FORGEJO_2E_EXAMPLE_3A_8443: 'scoped',
         FORGEJO_TOKEN: 'generic',
       },
     );
     expect(scoped.token).toBe('scoped');
-    expect(scoped.tokenSource).toBe('FORGEJO_TOKEN_FORGEJO_EXAMPLE_8443');
+    expect(scoped.tokenSource).toBe('FORGEJO_TOKEN_FORGEJO_2E_EXAMPLE_3A_8443');
 
     const flagged = await resolveConnection(
       { baseUrl: 'https://other.example' },
@@ -102,6 +111,57 @@ describe('URL and authentication configuration', () => {
 });
 
 describe('HTTP security behavior', () => {
+  it('strips IPv6 URL brackets before passing a hostname to Node', () => {
+    expect(requestHostname('[::1]')).toBe('::1');
+    expect(requestHostname('127.0.0.1')).toBe('127.0.0.1');
+  });
+
+  it('rejects a response whose body is truncated mid-stream', async () => {
+    const server = await startServer((_request, response) => {
+      response.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': '100',
+      });
+      response.write('{"version":"15.0.5"');
+      response.destroy();
+    });
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    await expect(
+      new ForgejoHttpClient(config).api({ path: 'version' }),
+    ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+  });
+
+  it.each([
+    [401, 'AUTH_REQUIRED'],
+    [403, 'FORBIDDEN'],
+    [404, 'NOT_FOUND'],
+    [409, 'CONFLICT'],
+    [429, 'RATE_LIMITED'],
+  ] as const)('maps HTTP %i to %s', async (status, code) => {
+    const server = await startServer((_request, response) =>
+      json(response, status, { message: 'ordinary API failure' }),
+    );
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    await expect(
+      new ForgejoHttpClient(config).api({ path: 'failure' }),
+    ).rejects.toMatchObject({ code });
+  });
+
+  it('rejects malformed JSON as an invalid response', async () => {
+    const server = await startServer((_request, response) => {
+      response.statusCode = 200;
+      response.setHeader('content-type', 'application/json');
+      response.end('{');
+    });
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    await expect(
+      new ForgejoHttpClient(config).api({ path: 'malformed' }),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+  });
+
   it('follows same-origin redirects with authentication', async () => {
     const server = await startServer((_request, response, recorded) => {
       if (recorded.url === '/prefix/api/v1/version') {
@@ -227,23 +287,27 @@ describe('HTTP security behavior', () => {
     const certDir = await mkdtemp(join(tmpdir(), 'forgejo-axi-test-ca-'));
     const keyPath = join(certDir, 'localhost-key.pem');
     const certPath = join(certDir, 'localhost-cert.pem');
-    await promisify(execFile)('openssl', [
-      'req',
-      '-x509',
-      '-newkey',
-      'rsa:2048',
-      '-nodes',
-      '-keyout',
-      keyPath,
-      '-out',
-      certPath,
-      '-days',
-      '2',
-      '-subj',
-      '/CN=localhost',
-      '-addext',
-      'subjectAltName=DNS:localhost,IP:127.0.0.1',
-    ]);
+    await promisify(execFile)(
+      'openssl',
+      [
+        'req',
+        '-x509',
+        '-newkey',
+        'rsa:2048',
+        '-nodes',
+        '-keyout',
+        keyPath,
+        '-out',
+        certPath,
+        '-days',
+        '2',
+        '-subj',
+        '/CN=localhost',
+        '-addext',
+        'subjectAltName=DNS:localhost,IP:127.0.0.1',
+      ],
+      { env: testSubprocessEnv() },
+    );
     const [key, cert] = await Promise.all([
       readFile(keyPath),
       readFile(certPath),

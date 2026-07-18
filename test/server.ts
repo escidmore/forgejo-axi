@@ -25,6 +25,7 @@ export async function startServer(
     recorded: RecordedRequest,
   ) => void | Promise<void>,
   prefix = '',
+  host = '127.0.0.1',
 ): Promise<FakeServer> {
   const requests: RecordedRequest[] = [];
   const server = createServer(async (request, response) => {
@@ -41,13 +42,14 @@ export async function startServer(
     requests.push(recorded);
     await handler(request, response, recorded);
   });
-  server.listen(0, '127.0.0.1');
+  server.listen(0, host);
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('missing server address');
+  const urlHost = host.includes(':') ? `[${host}]` : host;
   return {
-    baseUrl: `http://127.0.0.1:${address.port}${prefix}`,
+    baseUrl: `http://${urlHost}:${address.port}${prefix}`,
     requests,
     close: async () => {
       server.close();

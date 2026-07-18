@@ -20,6 +20,8 @@ export interface ConnectionConfig {
 }
 
 const ENCODED_PATH_HAZARD = /%(?:2e|2f|5c)/i;
+const TRUSTED_ENCODED_PATH_HAZARD = /%(?:2e|5c)/i;
+const ALPHANUMERIC = /^[A-Z0-9]$/;
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export async function resolveConnection(
@@ -112,7 +114,11 @@ export function canonicalizeBaseUrl(raw: string): URL {
   return url;
 }
 
-export function appendPath(base: URL, relativePath: string): URL {
+export function appendPath(
+  base: URL,
+  relativePath: string,
+  options: { allowEncodedSlash?: boolean } = {},
+): URL {
   if (relativePath.includes('#')) {
     throw usageError('API path must not contain a fragment');
   }
@@ -120,7 +126,10 @@ export function appendPath(base: URL, relativePath: string): URL {
   const rawPath =
     question === -1 ? relativePath : relativePath.slice(0, question);
   const rawQuery = question === -1 ? '' : relativePath.slice(question + 1);
-  if (ENCODED_PATH_HAZARD.test(rawPath) || rawPath.includes('\\')) {
+  const encodedHazard = options.allowEncodedSlash
+    ? TRUSTED_ENCODED_PATH_HAZARD
+    : ENCODED_PATH_HAZARD;
+  if (encodedHazard.test(rawPath) || rawPath.includes('\\')) {
     throw usageError(
       'API path contains an encoded or ambiguous path separator',
     );
@@ -140,7 +149,13 @@ export function appendPath(base: URL, relativePath: string): URL {
 }
 
 export function hostKey(url: URL): string {
-  return url.host.toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  return [...url.host.toUpperCase()]
+    .map((character) =>
+      ALPHANUMERIC.test(character)
+        ? character
+        : `_${character.codePointAt(0)?.toString(16).toUpperCase()}_`,
+    )
+    .join('');
 }
 
 function resolveToken(

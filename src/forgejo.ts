@@ -120,13 +120,25 @@ export interface ChecksResult {
 }
 
 export interface MergedProof {
-  merged: true;
+  merged: boolean;
   number: number;
   url: string;
   head_sha: string;
   merge_commit_sha: string | null;
   merged_at: string | null;
   merged_by: string | null;
+}
+
+interface PullSearchInfo {
+  complete: boolean;
+  pages: number;
+  fetched: number;
+  total: number | null;
+}
+
+interface PullFindResult {
+  pull_request: PullRequestIdentity | null;
+  search_info: PullSearchInfo;
 }
 
 export interface PageInfo {
@@ -218,14 +230,22 @@ export class ForgejoService {
     head: string,
     base: string | undefined,
     state: string,
-  ): Promise<PullRequestIdentity | null> {
+  ): Promise<PullFindResult> {
     const pulls = await this.listPulls(repo, state);
-    return (
+    const pullRequest =
       pulls.items.find(
         (pull) =>
           pull.head === head && (base === undefined || pull.base === base),
-      ) ?? null
-    );
+      ) ?? null;
+    return {
+      pull_request: pullRequest,
+      search_info: {
+        complete: pulls.complete,
+        pages: pulls.pages,
+        fetched: pulls.items.length,
+        total: pulls.total,
+      },
+    };
   }
 
   async getPull(
@@ -234,6 +254,23 @@ export class ForgejoService {
   ): Promise<PullRequestIdentity> {
     const response = await this.getPullRaw(repo, number);
     return normalizePull(this.config, repo, response);
+  }
+
+  async viewPull(
+    repo: RepositoryRef,
+    number: number,
+    full: boolean,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.getPullRaw(repo, number);
+    const body = response.body ?? '';
+    const previewLimit = 500;
+    const truncated = !full && body.length > previewLimit;
+    return {
+      ...normalizePull(this.config, repo, response),
+      body: truncated ? `${body.slice(0, previewLimit - 3)}...` : body,
+      body_length: body.length,
+      body_truncated: truncated,
+    };
   }
 
   async createPull(
@@ -248,8 +285,23 @@ export class ForgejoService {
   ): Promise<Record<string, unknown>> {
     const existing = await this.findPull(repo, input.head, input.base, 'open');
     const title = input.draft ? draftTitle(input.title) : input.title;
-    if (existing) {
-      return this.reconcilePull(repo, existing.number, title, input.body);
+    if (existing.pull_request) {
+      return this.reconcilePull(
+        repo,
+        existing.pull_request.number,
+        title,
+        input.body,
+      );
+    }
+    if (!existing.search_info.complete) {
+      throw new ForgejoAxiError(
+        'Pull request search reached the pagination safety ceiling',
+        'PAGINATION_INCOMPLETE',
+        {
+          details: { ...existing.search_info },
+          suggestions: ['Narrow the repository pull request set and retry'],
+        },
+      );
     }
 
     try {
@@ -273,8 +325,13 @@ export class ForgejoService {
         throw error;
       }
       const raced = await this.findPull(repo, input.head, input.base, 'open');
-      if (!raced) throw error;
-      return this.reconcilePull(repo, raced.number, title, input.body);
+      if (!raced.pull_request) throw error;
+      return this.reconcilePull(
+        repo,
+        raced.pull_request.number,
+        title,
+        input.body,
+      );
     }
   }
 
@@ -302,11 +359,12 @@ export class ForgejoService {
     const pull = await this.getPull(repo, number);
     const statusesPage = await this.http.paginate<ApiStatus>(
       `${repoPath(repo)}/statuses/${encodeURIComponent(pull.head_sha)}`,
-      { sort: 'newest' },
+      { sort: 'recentupdate' },
     );
     const statuses = latestStatuses(statusesPage.items);
     const branchResponse = await this.http.api<ApiBranch>({
       path: `${repoPath(repo)}/branches/${encodeURIComponent(pull.base)}`,
+      allowEncodedSlash: true,
     });
     return evaluateChecks(pull.head_sha, statuses, branchResponse.data);
   }
@@ -316,18 +374,18 @@ export class ForgejoService {
     number: number,
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
+    const checks = await this.checks(repo, number);
     if (pull.merged) {
       return {
         number,
         url: pull.url,
         head_sha: pull.head_sha,
         forgejo_mergeable: pull.mergeable,
-        checks_pass: true,
+        checks_pass: checks.passes,
         mergeable: false,
         reasons: ['already_merged'],
       };
     }
-    const checks = await this.checks(repo, number);
     const reasons: string[] = [];
     if (pull.mergeable !== true) reasons.push('forgejo_not_mergeable');
     if (!checks.passes) {
@@ -355,12 +413,8 @@ export class ForgejoService {
     method: 'merge' | 'squash' | 'rebase',
   ): Promise<MergedProof> {
     const before = await this.getPull(repo, number);
+    assertExpectedHead(before, expectedHead);
     if (before.merged) return mergedProof(before);
-    if (before.head_sha !== expectedHead) {
-      throw new ForgejoAxiError('Pull request head changed', 'HEAD_CHANGED', {
-        details: { expected: expectedHead, actual: before.head_sha },
-      });
-    }
     try {
       await this.http.api({
         method: 'POST',
@@ -371,7 +425,10 @@ export class ForgejoService {
       if (!(error instanceof ForgejoAxiError) || error.code === 'HEAD_CHANGED')
         throw error;
       const afterError = await this.getPull(repo, number);
-      if (afterError.merged) return mergedProof(afterError);
+      if (afterError.merged) {
+        assertExpectedHead(afterError, expectedHead);
+        return mergedProof(afterError);
+      }
       throw error;
     }
     const after = await this.getPull(repo, number);
@@ -381,6 +438,7 @@ export class ForgejoService {
         'MERGE_NOT_PROVEN',
       );
     }
+    assertExpectedHead(after, expectedHead);
     return mergedProof(after);
   }
 
@@ -389,9 +447,7 @@ export class ForgejoService {
     number: number,
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
-    return pull.merged
-      ? { ...mergedProof(pull) }
-      : { merged: false, number, url: pull.url, head_sha: pull.head_sha };
+    return { ...mergedProof(pull) };
   }
 
   private async getPullRaw(
@@ -468,7 +524,17 @@ export class ForgejoService {
       });
       document = response.data;
     } catch (error) {
-      if (error instanceof ForgejoAxiError && error.code === 'NOT_FOUND') {
+      if (
+        error instanceof ForgejoAxiError &&
+        [
+          'NOT_FOUND',
+          'AUTH_REQUIRED',
+          'FORBIDDEN',
+          'TIMEOUT',
+          'NETWORK_ERROR',
+          'INVALID_RESPONSE',
+        ].includes(error.code)
+      ) {
         return capabilityObject({}, 'swagger_unavailable', false);
       }
       throw error;
@@ -731,11 +797,20 @@ function isDraftTitle(title: string): boolean {
   return /^(?:WIP:|\[WIP\]|Draft:|\[Draft\])\s*/i.test(title);
 }
 
+function assertExpectedHead(
+  pull: PullRequestIdentity,
+  expectedHead: string,
+): void {
+  if (pull.head_sha !== expectedHead) {
+    throw new ForgejoAxiError('Pull request head changed', 'HEAD_CHANGED', {
+      details: { expected: expectedHead, actual: pull.head_sha },
+    });
+  }
+}
+
 function mergedProof(pull: PullRequestIdentity): MergedProof {
-  if (!pull.merged)
-    throw new ForgejoAxiError('Pull request is not merged', 'NOT_MERGED');
   return {
-    merged: true,
+    merged: pull.merged,
     number: pull.number,
     url: pull.url,
     head_sha: pull.head_sha,

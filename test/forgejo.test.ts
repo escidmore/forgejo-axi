@@ -19,10 +19,10 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-async function fixture(): Promise<Fixture> {
+async function fixture(version: 15 | 16 = 15): Promise<Fixture> {
   return parseJson<Fixture>(
     await readFile(
-      new URL('./fixtures/forgejo-15.json', import.meta.url),
+      new URL(`./fixtures/forgejo-${version}.json`, import.meta.url),
       'utf8',
     ),
   );
@@ -133,6 +133,39 @@ describe('normalized checks', () => {
       expect(checks.passes).toBe(passes);
     },
   );
+
+  it('accepts an internally encoded slash in the base branch path', async () => {
+    const data = await fixture();
+    const pull = {
+      ...data.pull,
+      base: { ref: 'release/1.0', sha: 'base123' },
+    };
+    const server = await startServer((_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      if (url.pathname.endsWith('/pulls/42')) {
+        return json(response, 200, pull);
+      }
+      if (url.pathname.endsWith('/statuses/abc123')) {
+        expect(url.searchParams.get('sort')).toBe('recentupdate');
+        return json(response, 200, [{ context: 'ci', status: 'success' }]);
+      }
+      if (url.pathname.endsWith('/branches/release%2F1.0')) {
+        return json(response, 200, {
+          name: 'release/1.0',
+          protected: true,
+          enable_status_check: true,
+          status_check_contexts: ['ci'],
+        });
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(service.checks(repo, 42)).resolves.toMatchObject({
+      required_state: 'success',
+      passes: true,
+    });
+  });
 
   it('uses only the newest status for a repeated context', async () => {
     const data = await fixture();
@@ -320,6 +353,46 @@ describe('idempotent pull request mutations', () => {
 });
 
 describe('expected-head merge', () => {
+  it('rejects a stale expected head on an already-merged pull request', async () => {
+    const data = await fixture();
+    const server = await startServer((_request, response) =>
+      json(response, 200, { ...data.pull, merged: true, state: 'closed' }),
+    );
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(
+      service.merge(repo, 42, 'stale-sha', 'merge'),
+    ).rejects.toMatchObject({ code: 'HEAD_CHANGED' });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('rejects a changed head discovered during merged-state recovery', async () => {
+    const data = await fixture();
+    let posted = false;
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.method === 'POST') {
+        posted = true;
+        return json(response, 409, { message: 'ordinary merge conflict' });
+      }
+      return json(response, 200, {
+        ...data.pull,
+        merged: posted,
+        state: posted ? 'closed' : 'open',
+        head: { ref: 'fix/race', sha: posted ? 'changed456' : 'abc123' },
+      });
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(
+      service.merge(repo, 42, 'abc123', 'merge'),
+    ).rejects.toMatchObject({
+      code: 'HEAD_CHANGED',
+      details: { expected: 'abc123', actual: 'changed456' },
+    });
+  });
+
   it('rejects a stale expected head without posting a merge', async () => {
     const data = await fixture();
     const server = await startServer((_request, response) =>
@@ -393,6 +466,130 @@ describe('expected-head merge', () => {
     });
     expect(repeated).toEqual(first);
     expect(posts).toBe(1);
+  });
+});
+
+describe('mergeability and state proof', () => {
+  it('reports actual failing checks for an already-merged pull request', async () => {
+    const data = await fixture(16);
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42')) {
+        return json(response, 200, {
+          ...data.pull,
+          merged: true,
+          state: 'closed',
+        });
+      }
+      if (path.endsWith('/statuses/abc123')) {
+        return json(response, 200, [{ context: 'ci', status: 'failure' }]);
+      }
+      if (path.endsWith('/branches/main')) {
+        return json(response, 200, {
+          name: 'main',
+          protected: true,
+          enable_status_check: true,
+          status_check_contexts: ['ci'],
+        });
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(service.mergeability(repo, 42)).resolves.toEqual({
+      number: 42,
+      url: `${server.baseUrl}/acme/widgets/pulls/42`,
+      head_sha: 'abc123',
+      forgejo_mergeable: true,
+      checks_pass: false,
+      mergeable: false,
+      reasons: ['already_merged'],
+    });
+  });
+
+  it('uses checks_none when an open pull request has no reported statuses', async () => {
+    const data = await fixture();
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42')) return json(response, 200, data.pull);
+      if (path.endsWith('/statuses/abc123')) return json(response, 200, []);
+      if (path.endsWith('/branches/main')) {
+        return json(response, 200, {
+          name: 'main',
+          protected: false,
+          enable_status_check: false,
+          status_check_contexts: [],
+        });
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(service.mergeability(repo, 42)).resolves.toMatchObject({
+      checks_pass: false,
+      mergeable: false,
+      reasons: ['checks_none'],
+    });
+  });
+
+  it('returns the complete stable proof shape for an unmerged pull request', async () => {
+    const data = await fixture();
+    const server = await startServer((_request, response) =>
+      json(response, 200, data.pull),
+    );
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(service.merged(repo, 42)).resolves.toEqual({
+      merged: false,
+      number: 42,
+      url: `${server.baseUrl}/acme/widgets/pulls/42`,
+      head_sha: 'abc123',
+      merge_commit_sha: null,
+      merged_at: null,
+      merged_by: null,
+    });
+  });
+});
+
+describe('pull search completeness', () => {
+  it('reports an incomplete search when the pagination ceiling is reached', async () => {
+    const server = await startServer((_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      const page = Number(url.searchParams.get('page'));
+      const pulls = Array.from({ length: 50 }, (_, index) => ({
+        number: (page - 1) * 50 + index + 1,
+        state: 'open',
+        title: `PR ${page}-${index}`,
+        head: { ref: `branch-${page}-${index}`, sha: `sha-${page}-${index}` },
+        base: { ref: 'main' },
+        merged: false,
+      }));
+      return json(response, 200, pulls);
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+    const result = await service.findPull(repo, 'missing', 'main', 'open');
+    expect(result.pull_request).toBeNull();
+    expect(result.search_info).toEqual({
+      complete: false,
+      pages: 100,
+      fetched: 5000,
+      total: null,
+    });
+    expect(server.requests).toHaveLength(100);
+
+    await expect(
+      service.createPull(repo, {
+        title: 'Must not duplicate',
+        head: 'missing',
+        base: 'main',
+        draft: false,
+      }),
+    ).rejects.toMatchObject({ code: 'PAGINATION_INCOMPLETE' });
+    expect(server.requests).toHaveLength(200);
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(
+      true,
+    );
   });
 });
 

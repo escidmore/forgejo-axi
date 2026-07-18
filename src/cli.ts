@@ -16,6 +16,7 @@ import {
   pageInfo,
   parsePullNumber,
   parseRepository,
+  type PullRequestIdentity,
   type RepositoryRef,
 } from './forgejo.js';
 
@@ -41,14 +42,14 @@ const TOP_HELP = `forgejo-axi — ${DESCRIPTION}
 Usage:
   forgejo-axi status [connection flags]
   forgejo-axi repo view --repo OWNER/REPO [connection flags]
-  forgejo-axi api METHOD PATH [--data JSON] [--paginate] [connection flags]
+  forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
   forgejo-axi pr <find|list|view|create|update|checks|mergeability|merge|merged> ...
 
 Connection flags:
   --base-url URL     Forgejo root URL; defaults to FORGEJO_BASE_URL
   --token-env NAME   Read the token from this environment variable
   --timeout-ms N     Request timeout; default 15000
-  --ca-file PATH     Additional CA certificate file
+  --ca-file PATH     Replacement CA trust bundle file
   --json             Emit JSON instead of TOON
 
 Examples:
@@ -76,10 +77,10 @@ Run \`forgejo-axi pr <command> --help\` for flags and examples.
 const HELP: Record<string, string> = {
   status: `forgejo-axi status — probe host, authentication, version, and capabilities\n\nUsage:\n  forgejo-axi status [connection flags]\n\nExample:\n  forgejo-axi status --base-url https://forgejo.example\n`,
   'repo view': `forgejo-axi repo view — show repository identity and lifecycle features\n\nUsage:\n  forgejo-axi repo view --repo OWNER/REPO [connection flags]\n\nExample:\n  forgejo-axi repo view --repo owner/repo\n`,
-  api: `forgejo-axi api — call a Forgejo API v1 path\n\nUsage:\n  forgejo-axi api METHOD PATH [--data JSON] [--paginate] [connection flags]\n\nFlags:\n  --data JSON    JSON request body\n  --paginate     Fetch every array page (GET only)\n\nExamples:\n  forgejo-axi api GET repos/owner/repo\n  forgejo-axi api PATCH repos/owner/repo/pulls/4 --data '{"title":"New title"}'\n`,
+  api: `forgejo-axi api — call a Forgejo API v1 path\n\nUsage:\n  forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]\n\nFlags:\n  --data JSON    JSON request body\n  --paginate     Fetch every array page (GET only)\n  --limit N      Display at most N fetched rows in TOON mode\n  --full         Display every fetched row in TOON mode\n\nExamples:\n  forgejo-axi api GET repos/owner/repo\n  forgejo-axi api GET repos/owner/repo/pulls --paginate --full\n  forgejo-axi api PATCH repos/owner/repo/pulls/4 --data '{"title":"New title"}'\n`,
   'pr find': `forgejo-axi pr find — find by head branch\n\nUsage:\n  forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state open|closed|all] [connection flags]\n\nExample:\n  forgejo-axi pr find --repo owner/repo --head feature --base main\n`,
-  'pr list': `forgejo-axi pr list — list pull requests\n\nUsage:\n  forgejo-axi pr list --repo OWNER/REPO [--state open|closed|all] [--limit N|--full] [connection flags]\n\nExamples:\n  forgejo-axi pr list --repo owner/repo\n  forgejo-axi pr list --repo owner/repo --state all --full\n`,
-  'pr view': `forgejo-axi pr view — show canonical pull request identity\n\nUsage:\n  forgejo-axi pr view --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi pr view --repo owner/repo 42\n`,
+  'pr list': `forgejo-axi pr list — list pull requests\n\nUsage:\n  forgejo-axi pr list --repo OWNER/REPO [--state open|closed|all] [--limit N|--full] [--fields LIST|all] [connection flags]\n\nFlags:\n  --fields LIST  Comma-separated identity fields; defaults to number,title,state,head\n\nExamples:\n  forgejo-axi pr list --repo owner/repo\n  forgejo-axi pr list --repo owner/repo --state all --full --fields all\n`,
+  'pr view': `forgejo-axi pr view — show canonical pull request identity and body\n\nUsage:\n  forgejo-axi pr view --repo OWNER/REPO NUMBER [--full] [connection flags]\n\nFlags:\n  --full  Display the complete pull request body instead of its preview\n\nExample:\n  forgejo-axi pr view --repo owner/repo 42 --full\n`,
   'pr create': `forgejo-axi pr create — idempotently create or reconcile an open pull request\n\nUsage:\n  forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY] [--draft] [connection flags]\n\nExample:\n  forgejo-axi pr create --repo owner/repo --title "Fix race" --head fix/race --base main\n`,
   'pr update': `forgejo-axi pr update — idempotently update a pull request\n\nUsage:\n  forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--base BRANCH] [--state open|closed] [connection flags]\n\nExample:\n  forgejo-axi pr update --repo owner/repo 42 --state closed\n`,
   'pr checks': `forgejo-axi pr checks — normalize statuses and required contexts\n\nUsage:\n  forgejo-axi pr checks --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi pr checks --repo owner/repo 42 --json\n`,
@@ -206,7 +207,12 @@ async function runApi(
   if (args.includes('--help')) return helpResult('api');
   const parsed = parseArgs(
     args,
-    withFlags({ '--data': 'value', '--paginate': 'boolean' }),
+    withFlags({
+      '--data': 'value',
+      '--paginate': 'boolean',
+      '--limit': 'value',
+      '--full': 'boolean',
+    }),
     'api',
   );
   if (parsed.positionals.length !== 2) {
@@ -219,15 +225,24 @@ async function runApi(
     throw usageError(`Unsupported API method: ${rawMethod}`);
   }
   const paginate = boolFlag(parsed, '--paginate');
+  const full = boolFlag(parsed, '--full');
+  const json = boolFlag(parsed, '--json');
+  const requestedLimit = stringFlag(parsed, '--limit');
   const rawData = stringFlag(parsed, '--data');
   if (paginate && method !== 'GET') throw usageError('--paginate requires GET');
   if (paginate && rawData !== undefined)
     throw usageError('--paginate cannot be combined with --data');
+  if (!paginate && (full || requestedLimit !== undefined)) {
+    throw usageError('--limit and --full require --paginate');
+  }
+  rejectDisplayFlagConflicts(full, requestedLimit, json);
   const body = rawData === undefined ? undefined : parseJson(rawData);
   const service = await serviceFor(parsed, env);
   if (paginate) {
     const page = await service.rawPaginate(path);
-    return { data: page.items, page_info: pageInfo(page, page.items.length) };
+    const limit = displayLimit(requestedLimit);
+    const displayed = full || json ? page.items : page.items.slice(0, limit);
+    return listOutput('data', displayed, page, full || json);
   }
   const response = await service.rawApi(method, path, body);
   return { status: response.status, data: response.data };
@@ -288,8 +303,12 @@ async function pullFind(
   const base = stringFlag(parsed, '--base');
   const state = pullState(stringFlag(parsed, '--state') ?? 'open', true);
   const service = await serviceFor(parsed, env);
-  const pull = await service.findPull(repo, head, base, state);
-  return { found: pull !== null, pull_request: pull };
+  const result = await service.findPull(repo, head, base, state);
+  return {
+    found: result.pull_request !== null,
+    pull_request: result.pull_request,
+    search_info: result.search_info,
+  };
 }
 
 async function pullList(
@@ -303,31 +322,26 @@ async function pullList(
       '--state': 'value',
       '--limit': 'value',
       '--full': 'boolean',
+      '--fields': 'value',
     }),
     'pr list',
   );
   rejectPositionals(parsed);
-  if (
-    boolFlag(parsed, '--full') &&
-    stringFlag(parsed, '--limit') !== undefined
-  ) {
-    throw usageError('--full and --limit cannot be combined');
-  }
+  const full = boolFlag(parsed, '--full');
+  const json = boolFlag(parsed, '--json');
+  const requestedLimit = stringFlag(parsed, '--limit');
+  rejectDisplayFlagConflicts(full, requestedLimit, json);
   const repo = resolveRepo(parsed, env);
   const state = pullState(stringFlag(parsed, '--state') ?? 'open', true);
   const service = await serviceFor(parsed, env);
   const page = await service.listPulls(repo, state);
-  const requestedLimit = stringFlag(parsed, '--limit');
-  const limit =
-    requestedLimit === undefined
-      ? 30
-      : positiveInteger(requestedLimit, '--limit');
-  const showAll = boolFlag(parsed, '--full') || boolFlag(parsed, '--json');
-  const displayed = showAll ? page.items : page.items.slice(0, limit);
-  return {
-    pull_requests: displayed,
-    page_info: pageInfo(page, displayed.length),
-  };
+  const limit = displayLimit(requestedLimit);
+  const showAll = full || json;
+  const fields = pullListFields(stringFlag(parsed, '--fields'));
+  const displayed = (showAll ? page.items : page.items.slice(0, limit)).map(
+    (pull) => selectPullFields(pull, fields),
+  );
+  return listOutput('pull_requests', displayed, page, showAll);
 }
 
 async function pullRead(
@@ -337,7 +351,10 @@ async function pullRead(
 ): Promise<Record<string, unknown>> {
   const parsed = parseArgs(
     args,
-    withFlags({ '--repo': 'value' }),
+    withFlags({
+      '--repo': 'value',
+      ...(command === 'view' ? { '--full': 'boolean' as const } : {}),
+    }),
     `pr ${command}`,
   );
   const number = parsePullNumber(
@@ -345,8 +362,15 @@ async function pullRead(
   );
   const repo = resolveRepo(parsed, env);
   const service = await serviceFor(parsed, env);
-  if (command === 'view')
-    return { pull_request: await service.getPull(repo, number) };
+  if (command === 'view') {
+    return {
+      pull_request: await service.viewPull(
+        repo,
+        number,
+        boolFlag(parsed, '--full'),
+      ),
+    };
+  }
   if (command === 'checks')
     return { checks: await service.checks(repo, number) };
   if (command === 'mergeability')
@@ -372,12 +396,15 @@ async function pullCreate(
   );
   rejectPositionals(parsed);
   const repo = resolveRepo(parsed, env);
-  const service = await serviceFor(parsed, env);
+  const title = requireFlag(parsed, '--title');
+  const head = requireFlag(parsed, '--head');
+  const base = requireFlag(parsed, '--base');
   const body = stringFlag(parsed, '--body');
+  const service = await serviceFor(parsed, env);
   return service.createPull(repo, {
-    title: requireFlag(parsed, '--title'),
-    head: requireFlag(parsed, '--head'),
-    base: requireFlag(parsed, '--base'),
+    title,
+    head,
+    base,
     ...(body === undefined ? {} : { body }),
     draft: boolFlag(parsed, '--draft'),
   });
@@ -486,6 +513,101 @@ function positiveInteger(value: string, label: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) throw usageError(`${label} is too large`);
   return parsed;
+}
+
+const PULL_IDENTITY_FIELDS: ReadonlyArray<keyof PullRequestIdentity> = [
+  'number',
+  'url',
+  'api_url',
+  'state',
+  'draft',
+  'title',
+  'head',
+  'base',
+  'head_sha',
+  'mergeable',
+  'merged',
+  'merge_commit_sha',
+  'merged_at',
+  'merged_by',
+];
+const DEFAULT_PULL_LIST_FIELDS: ReadonlyArray<keyof PullRequestIdentity> = [
+  'number',
+  'title',
+  'state',
+  'head',
+];
+
+function rejectDisplayFlagConflicts(
+  full: boolean,
+  requestedLimit: string | undefined,
+  json: boolean,
+): void {
+  if (full && requestedLimit !== undefined) {
+    throw usageError('--full and --limit cannot be combined');
+  }
+  if (json && requestedLimit !== undefined) {
+    throw usageError('--limit cannot be combined with --json');
+  }
+}
+
+function displayLimit(requestedLimit: string | undefined): number {
+  return requestedLimit === undefined
+    ? 30
+    : positiveInteger(requestedLimit, '--limit');
+}
+
+function pullListFields(
+  raw: string | undefined,
+): ReadonlyArray<keyof PullRequestIdentity> {
+  if (raw === undefined) return DEFAULT_PULL_LIST_FIELDS;
+  if (raw === 'all') return PULL_IDENTITY_FIELDS;
+  const fields = raw.split(',');
+  if (
+    fields.some(
+      (field, index) =>
+        !PULL_IDENTITY_FIELDS.includes(field as keyof PullRequestIdentity) ||
+        fields.indexOf(field) !== index,
+    )
+  ) {
+    throw usageError(`Invalid or duplicate --fields value: ${raw}`, [
+      `Valid fields: ${PULL_IDENTITY_FIELDS.join(',')},all`,
+    ]);
+  }
+  return fields as Array<keyof PullRequestIdentity>;
+}
+
+function selectPullFields(
+  pull: PullRequestIdentity,
+  fields: ReadonlyArray<keyof PullRequestIdentity>,
+): Record<string, unknown> {
+  return Object.fromEntries(fields.map((field) => [field, pull[field]]));
+}
+
+function listOutput<T>(
+  key: string,
+  displayed: T[],
+  page: {
+    items: unknown[];
+    complete: boolean;
+    pages: number;
+    total: number | null;
+  },
+  showAll: boolean,
+): Record<string, unknown> {
+  const info = pageInfo(page, displayed.length);
+  const next: string[] = [];
+  if (!showAll && displayed.length < page.items.length) {
+    next.push('Rerun with --full to display every fetched entry');
+  }
+  if (!page.complete) {
+    next.push('Narrow the query; the pagination safety ceiling was reached');
+  }
+  return {
+    [key]: displayed,
+    page_info: info,
+    ...(next.length === 0 ? {} : { next }),
+  };
 }
 
 function parseJson(value: string): unknown {

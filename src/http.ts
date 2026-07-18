@@ -16,6 +16,7 @@ export interface RequestInput {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   accept?: string;
+  allowEncodedSlash?: boolean;
 }
 
 export interface Paginated<T> {
@@ -37,7 +38,13 @@ export class ForgejoHttpClient {
     const path = input.path ?? '';
     return this.request<T>({
       ...input,
-      url: appendPath(this.config.apiUrl, path),
+      url: appendPath(
+        this.config.apiUrl,
+        path,
+        input.allowEncodedSlash === undefined
+          ? {}
+          : { allowEncodedSlash: input.allowEncodedSlash },
+      ),
     });
   }
 
@@ -162,7 +169,7 @@ export class ForgejoHttpClient {
     }
     const options: https.RequestOptions = {
       protocol: url.protocol,
-      hostname: url.hostname,
+      hostname: requestHostname(url.hostname),
       port: url.port,
       path: `${url.pathname}${url.search}`,
       method,
@@ -173,22 +180,53 @@ export class ForgejoHttpClient {
     const requestModule = url.protocol === 'https:' ? https : http;
 
     return new Promise((resolve, reject) => {
+      let settled = false;
+      const rejectOnce = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        reject(
+          error instanceof ForgejoAxiError ? error : this.networkError(error),
+        );
+      };
       const request = requestModule.request(options, (response) => {
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer | string) => {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
         });
+        response.once('aborted', () => {
+          rejectOnce(new Error('Forgejo response ended before the body'));
+        });
+        response.once('error', rejectOnce);
+        response.once('close', () => {
+          if (!response.complete) {
+            rejectOnce(new Error('Forgejo response ended before the body'));
+          }
+        });
         response.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
-          const data = parseBody(text, response.headers['content-type']);
-          resolve({
-            status: response.statusCode ?? 0,
-            headers: response.headers,
-            data: redactData(data, this.config.token),
-          });
+          if (settled) return;
+          if (!response.complete) {
+            rejectOnce(new Error('Forgejo response ended before the body'));
+            return;
+          }
+          try {
+            const text = Buffer.concat(chunks).toString('utf8');
+            const data = parseBody(text, response.headers['content-type']);
+            settled = true;
+            resolve({
+              status: response.statusCode ?? 0,
+              headers: response.headers,
+              data: redactData(data, this.config.token),
+            });
+          } catch (error) {
+            rejectOnce(
+              error instanceof Error
+                ? error
+                : new Error('Unable to parse Forgejo response'),
+            );
+          }
         });
       });
-      request.on('error', (error) => reject(this.networkError(error)));
+      request.on('error', (error) => rejectOnce(error));
       if (body !== undefined) request.write(body);
       request.end();
     });
@@ -318,6 +356,10 @@ function resolveRedirectTarget(location: string, current: URL): URL {
       'INVALID_REDIRECT',
     );
   }
+}
+
+export function requestHostname(hostname: string): string {
+  return hostname.replace(/^\[|\]$/g, '');
 }
 
 function safeUrl(url: URL): string {
