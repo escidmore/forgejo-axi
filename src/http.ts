@@ -300,7 +300,7 @@ function redactData(data: unknown, token: string | undefined): unknown {
   if (data && typeof data === 'object') {
     return Object.fromEntries(
       Object.entries(data).map(([key, value]) => [
-        key,
+        redact(key, token) ?? key,
         redactData(value, token),
       ]),
     );

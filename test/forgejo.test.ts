@@ -551,6 +551,62 @@ describe('mergeability and state proof', () => {
   });
 });
 
+describe('malformed pull responses', () => {
+  it('rejects checks when the pull omits the head SHA', async () => {
+    const data = await fixture();
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42')) {
+        return json(response, 200, { ...data.pull, head: { ref: 'fix/race' } });
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(service.checks(repo, 42)).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
+    expect(
+      server.requests.some((request) => request.url.includes('/statuses/')),
+    ).toBe(false);
+  });
+
+  it('rejects a merge before POST when the pull head SHA is empty', async () => {
+    const data = await fixture();
+    const server = await startServer((_request, response) =>
+      json(response, 200, {
+        ...data.pull,
+        head: { ref: 'fix/race', sha: '' },
+      }),
+    );
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(
+      service.merge(repo, 42, 'abc123', 'merge'),
+    ).rejects.toMatchObject({ code: 'INVALID_RESPONSE' });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('rejects a merged-state proof when the pull omits the head SHA', async () => {
+    const data = await fixture();
+    const server = await startServer((_request, response) =>
+      json(response, 200, {
+        ...data.pull,
+        head: { ref: 'fix/race' },
+        merged: true,
+        state: 'closed',
+      }),
+    );
+    servers.push(server);
+    const service = await serviceFor(server);
+    await expect(service.merged(repo, 42)).rejects.toMatchObject({
+      code: 'INVALID_RESPONSE',
+    });
+  });
+});
+
 describe('pull search completeness', () => {
   it('reports an incomplete search when the pagination ceiling is reached', async () => {
     const server = await startServer((_request, response, recorded) => {

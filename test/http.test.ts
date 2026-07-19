@@ -268,6 +268,28 @@ describe('HTTP security behavior', () => {
     expect((caught as Error).message).toContain('[REDACTED]');
   });
 
+  it('redacts tokens echoed inside JSON object keys', async () => {
+    const token = 'key-"secret\\value';
+    const server = await startServer((_request, response) =>
+      json(response, 200, {
+        [`leaked ${token} key`]: { [token]: 'nested' },
+        list: [{ [`${token}-item`]: 'entry' }],
+      }),
+    );
+    servers.push(server);
+    const config = await resolveConnection(
+      { baseUrl: server.baseUrl, tokenEnv: 'TOKEN' },
+      { TOKEN: token },
+    );
+    const response = await new ForgejoHttpClient(config).api<
+      Record<string, unknown>
+    >({ path: 'echo' });
+    expect(response.data).toEqual({
+      'leaked [REDACTED] key': { '[REDACTED]': 'nested' },
+      list: [{ '[REDACTED]-item': 'entry' }],
+    });
+  });
+
   it('enforces the configured request timeout', async () => {
     const server = await startServer(async (_request, response) => {
       await new Promise((resolve) => setTimeout(resolve, 50));

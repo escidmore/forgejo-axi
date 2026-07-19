@@ -357,8 +357,9 @@ export class ForgejoService {
 
   async checks(repo: RepositoryRef, number: number): Promise<ChecksResult> {
     const pull = await this.getPull(repo, number);
+    const headSha = requireHeadSha(pull);
     const statusesPage = await this.http.paginate<ApiStatus>(
-      `${repoPath(repo)}/statuses/${encodeURIComponent(pull.head_sha)}`,
+      `${repoPath(repo)}/statuses/${encodeURIComponent(headSha)}`,
       { sort: 'recentupdate' },
     );
     const statuses = latestStatuses(statusesPage.items);
@@ -366,7 +367,7 @@ export class ForgejoService {
       path: `${repoPath(repo)}/branches/${encodeURIComponent(pull.base)}`,
       allowEncodedSlash: true,
     });
-    return evaluateChecks(pull.head_sha, statuses, branchResponse.data);
+    return evaluateChecks(headSha, statuses, branchResponse.data);
   }
 
   async mergeability(
@@ -413,6 +414,7 @@ export class ForgejoService {
     method: 'merge' | 'squash' | 'rebase',
   ): Promise<MergedProof> {
     const before = await this.getPull(repo, number);
+    requireHeadSha(before);
     assertExpectedHead(before, expectedHead);
     if (before.merged) return mergedProof(before);
     try {
@@ -797,6 +799,16 @@ function isDraftTitle(title: string): boolean {
   return /^(?:WIP:|\[WIP\]|Draft:|\[Draft\])\s*/i.test(title);
 }
 
+function requireHeadSha(pull: PullRequestIdentity): string {
+  if (!pull.head_sha) {
+    throw new ForgejoAxiError(
+      'Forgejo pull response omitted the head commit SHA',
+      'INVALID_RESPONSE',
+    );
+  }
+  return pull.head_sha;
+}
+
 function assertExpectedHead(
   pull: PullRequestIdentity,
   expectedHead: string,
@@ -813,7 +825,7 @@ function mergedProof(pull: PullRequestIdentity): MergedProof {
     merged: pull.merged,
     number: pull.number,
     url: pull.url,
-    head_sha: pull.head_sha,
+    head_sha: requireHeadSha(pull),
     merge_commit_sha: pull.merge_commit_sha,
     merged_at: pull.merged_at,
     merged_by: pull.merged_by,
