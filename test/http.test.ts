@@ -192,6 +192,34 @@ describe('HTTP security behavior', () => {
     ).toBe(true);
   });
 
+  it.each([301, 302])(
+    'rejects ambiguous HTTP %i mutation redirects without replaying the body',
+    async (status) => {
+      const server = await startServer((_request, response, recorded) => {
+        if (recorded.url === '/api/v1/mutate') {
+          response.statusCode = status;
+          response.setHeader('location', '/api/v1/target');
+          response.end();
+          return;
+        }
+        return json(response, 200, {});
+      });
+      servers.push(server);
+      const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+      await expect(
+        new ForgejoHttpClient(config).api({
+          method: 'POST',
+          path: 'mutate',
+          body: { value: 'once' },
+        }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_REDIRECT',
+        details: { status, method: 'POST' },
+      });
+      expect(server.requests).toHaveLength(1);
+    },
+  );
+
   it('rejects cross-origin redirects before credentials reach the target', async () => {
     const target = await startServer((_request, response) =>
       json(response, 200, {}),

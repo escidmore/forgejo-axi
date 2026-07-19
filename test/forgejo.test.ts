@@ -505,6 +505,11 @@ describe('mergeability and state proof', () => {
       mergeable: false,
       reasons: ['already_merged'],
     });
+    expect(
+      server.requests.filter((request) =>
+        new URL(request.url, 'http://fake').pathname.endsWith('/pulls/42'),
+      ),
+    ).toHaveLength(1);
   });
 
   it('uses checks_none when an open pull request has no reported statuses', async () => {
@@ -646,6 +651,49 @@ describe('pull search completeness', () => {
     expect(server.requests.every((request) => request.method === 'GET')).toBe(
       true,
     );
+  });
+
+  it('reports an incomplete search during create conflict recovery', async () => {
+    let raced = false;
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.method === 'POST') {
+        raced = true;
+        return json(response, 409, { message: 'pull request already exists' });
+      }
+      if (!raced) return json(response, 200, []);
+      const page = Number(
+        new URL(recorded.url, 'http://fake').searchParams.get('page'),
+      );
+      return json(
+        response,
+        200,
+        Array.from({ length: 50 }, (_, index) => ({
+          number: (page - 1) * 50 + index + 1,
+          state: 'open',
+          title: `PR ${page}-${index}`,
+          head: { ref: `other-${page}-${index}`, sha: `sha-${page}-${index}` },
+          base: { ref: 'main' },
+          merged: false,
+        })),
+      );
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+
+    await expect(
+      service.createPull(repo, {
+        title: 'Must find racing creation',
+        head: 'missing',
+        base: 'main',
+        draft: false,
+      }),
+    ).rejects.toMatchObject({
+      code: 'PAGINATION_INCOMPLETE',
+      details: { complete: false, pages: 100, fetched: 5000 },
+    });
+    expect(
+      server.requests.filter((request) => request.method === 'POST'),
+    ).toHaveLength(1);
   });
 });
 

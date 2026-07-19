@@ -5,6 +5,9 @@ This document is the compatibility boundary for machine consumers. Additive obje
 ## Invocation and configuration
 
 ```text
+forgejo-axi
+forgejo-axi --help
+forgejo-axi --version
 forgejo-axi status [connection flags]
 forgejo-axi repo view --repo OWNER/REPO [connection flags]
 forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
@@ -19,11 +22,13 @@ forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merg
 forgejo-axi pr merged --repo OWNER/REPO NUMBER
 ```
 
+With no arguments and no configured base URL, the CLI returns a configuration-free home document. With `FORGEJO_BASE_URL` configured, bare invocation performs the same runtime probes as `status` and may fail with a runtime exit. `--help` and `--version` are top-level, sole-argument invocations.
+
 Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. `--ca-file`/`FORGEJO_CA_FILE` supplies a replacement CA trust bundle, matching Node's TLS `ca` behavior; it does not append to the platform trust store.
 
 Authentication resolves `--token-env` first, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` only when the base URL came from `FORGEJO_BASE_URL`. An explicitly named `--token-env` variable that is unset or empty is a usage error. Tokens are never accepted as arguments, persisted, or emitted.
 
-`HOST_KEY` is the uppercase URL host including a non-default port. Each non-alphanumeric ASCII character is encoded as `_HH_` using its hexadecimal code point, so `forgejo.example:8443` becomes `FORGEJO_2E_EXAMPLE_3A_8443` and cannot collide with `forgejo-example:8443`. HTTP authentication is accepted only for loopback hosts. Base URLs may contain a path prefix; credentials, query strings, fragments, encoded separators/dot segments, and cross-origin redirects are rejected. Internally encoded `/` characters are accepted only for trusted Forgejo path segments such as branch names; raw `api PATH` input remains strict.
+`HOST_KEY` is the uppercase URL host including a non-default port. Each non-alphanumeric ASCII character is encoded as `_HH_` using its hexadecimal code point, so `forgejo.example:8443` becomes `FORGEJO_2E_EXAMPLE_3A_8443` and cannot collide with `forgejo-example:8443`. HTTP authentication is accepted only for loopback hosts. Base URLs may contain a path prefix; credentials, query strings, fragments, encoded separators/dot segments, and cross-origin redirects are rejected. Same-origin `301`/`302` redirects are followed only for `GET`/`HEAD`, ambiguous mutation redirects are rejected, `303` switches to `GET`, and `307`/`308` preserve the method and body. Internally encoded `/` characters are accepted only for trusted Forgejo path segments such as branch names; raw `api PATH` input remains strict.
 
 ## Output and exits
 
@@ -51,15 +56,15 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
 - `pr list`: `{pull_requests,page_info,next?}`. Default rows are `{number,title,state,head}`; `--fields` selects other identity fields and `--fields all` selects all of them.
-- `pr view`: `{pull_request:{...identity,body,body_length,body_truncated}}`. `body` is a 500-character preview by default and complete with `--full`.
-- `pr create`: `{created,updated,pull_request}`. `pr update`: `{updated,pull_request}`. Existing desired state is exit-0 and mutation-free.
+- `pr view`: `{pull_request:{...identity,body,body_length,body_truncated}}`. `body` is a 500-Unicode-code-point preview by default and complete with `--full`; `body_length` is measured in Unicode code points.
+- `pr create`: `{created,updated,pull_request}`. `pr update`: `{updated,pull_request}`. Existing desired state is exit-0 and mutation-free. Creation refuses with `PAGINATION_INCOMPLETE` if either its initial duplicate search or its post-conflict race-recovery search reaches the pagination ceiling without finding the pull request.
 - `pr checks`: `{checks}`; `pr mergeability`: `{mergeability}`; `pr merge` and `pr merged`: `{proof}`.
 
 ## Stable lifecycle objects
 
 A pull request identity is `{number, url, api_url, state, draft, title, head, base, head_sha, mergeable, merged, merge_commit_sha, merged_at, merged_by}`. `url` and `api_url` are constructed from the configured canonical base URL and repository identity, not trusted response links.
 
-Checks are `{sha, reported, state, statuses, required, required_state, passes, protection}`. `state` is `none|pending|failure|success`; an empty set is always `reported=0,state=none`. Each required pattern is `missing|pending|failure|success`; only `success` passes. `required_state` is `not_required|missing|pending|failure|success`, so missing required contexts can never be green.
+Checks are `{sha, reported, state, statuses, required, required_state, passes, protection}`. Status rows are `{context,state,description,target_url,updated_at}`; required-context rows are `{context,state,matched}`; protection is `{protected,rule,status_checks_enabled}`. Nullable status metadata and `protection.rule` are emitted as `null`. `state` is `none|pending|failure|success`; an empty set is always `reported=0,state=none`. Each required pattern is `missing|pending|failure|success`; only `success` passes. `required_state` is `not_required|missing|pending|failure|success`, so missing required contexts can never be green. Checks query the current base branch protection; if that branch no longer exists, the command fails `NOT_FOUND` rather than fabricating required-context semantics, including for an already-merged pull request.
 
 Mergeability is `{number, url, head_sha, forgejo_mergeable, checks_pass, mergeable, reasons}`. `mergeable` is true only when Forgejo reports the pull mergeable and checks pass. Checks are evaluated even for already-merged pull requests; `checks_pass` is never fabricated. Reasons include `already_merged`, `forgejo_not_mergeable`, and `checks_<state>` using the required state, or the overall state when no contexts are required.
 
@@ -67,4 +72,4 @@ Merge requires `--expected-head`. The expected SHA is verified before returning 
 
 Merged-state proof always has `{merged, number, url, head_sha, merge_commit_sha, merged_at, merged_by}`. For an unmerged pull request, `merged=false` and unavailable merge fields are `null`; consumers never receive a smaller undocumented shape.
 
-Capabilities are runtime-probed booleans, never version assumptions. If the Swagger document is unavailable, forbidden, malformed, or times out after the API version probe succeeds, status returns all capability booleans false with `probe.complete=false` instead of failing the entire status command. Forgejo 15 reports Actions job logs unsupported; Forgejo 16 reports support only when its runtime document advertises the route. Unsupported logs never alter commit-status semantics.
+Capabilities are runtime-probed booleans, never version assumptions. If the Swagger document is unavailable, forbidden, rate-limited, malformed, times out, or returns a server error after the API version probe succeeds, status returns all capability booleans false with `probe.complete=false` instead of failing the entire status command. Forgejo 15 reports Actions job logs unsupported; Forgejo 16 reports support only when its runtime document advertises the route. Unsupported logs never alter commit-status semantics.

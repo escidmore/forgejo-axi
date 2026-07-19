@@ -274,9 +274,9 @@ describe('CLI contract', () => {
     expect(output.help).toEqual(['Run `forgejo-axi pr find --help`']);
   });
 
-  it('previews pull request bodies and exposes --full as an escape hatch', async () => {
+  it('previews pull request bodies without splitting Unicode characters', async () => {
     const fixture = await loadFixture(15);
-    const body = 'x'.repeat(600);
+    const body = `${'x'.repeat(496)}😀${'y'.repeat(103)}`;
     const server = await startServer((_request, response) =>
       json(response, 200, { ...fixture.pull, body }),
     );
@@ -298,8 +298,8 @@ describe('CLI contract', () => {
         body_truncated: boolean;
       };
     }>((await invoke(baseArgs)).output);
-    expect(preview.pull_request.body).toHaveLength(500);
-    expect(preview.pull_request.body.endsWith('...')).toBe(true);
+    expect([...preview.pull_request.body]).toHaveLength(500);
+    expect(preview.pull_request.body).toBe(`${'x'.repeat(496)}😀...`);
     expect(preview.pull_request).toMatchObject({
       body_length: 600,
       body_truncated: true,
@@ -416,6 +416,177 @@ describe('CLI contract', () => {
     });
   });
 
+  it('wires lifecycle mutations, checks, and mergeability through the CLI', async () => {
+    const fixture = await loadFixture(16);
+    let pull = { ...fixture.pull };
+    let merged = false;
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls') && recorded.method === 'GET') {
+        return json(response, 200, []);
+      }
+      if (path.endsWith('/pulls') && recorded.method === 'POST') {
+        const posted = parseJson<Record<string, unknown>>(recorded.body);
+        expect(posted).toEqual({
+          title: 'Created title',
+          head: 'fix/race',
+          base: 'main',
+          body: 'Created body',
+        });
+        pull = {
+          ...pull,
+          title: posted['title'],
+          body: posted['body'],
+        };
+        return json(response, 201, pull);
+      }
+      if (path.endsWith('/pulls/42/merge') && recorded.method === 'POST') {
+        expect(parseJson(recorded.body)).toEqual({
+          Do: 'squash',
+          head_commit_id: 'abc123',
+        });
+        merged = true;
+        response.statusCode = 200;
+        response.end();
+        return;
+      }
+      if (path.endsWith('/pulls/42') && recorded.method === 'GET') {
+        return json(response, 200, {
+          ...pull,
+          merged,
+          state: merged ? 'closed' : 'open',
+          merge_commit_sha: merged ? 'merge456' : null,
+          merged_at: merged ? '2026-01-03T00:00:00Z' : null,
+          merged_by: merged ? { login: 'robot' } : null,
+        });
+      }
+      if (path.endsWith('/pulls/42') && recorded.method === 'PATCH') {
+        const patch = parseJson<Record<string, unknown>>(recorded.body);
+        expect(patch).toEqual({ title: 'Updated title' });
+        pull = { ...pull, ...patch };
+        return json(response, 200, pull);
+      }
+      if (path.endsWith('/statuses/abc123')) {
+        return json(response, 200, [
+          {
+            context: 'ci',
+            status: 'success',
+            description: 'green',
+            target_url: 'https://ci.example/run',
+            updated_at: '2026-01-02T00:00:00Z',
+          },
+        ]);
+      }
+      if (path.endsWith('/branches/main')) {
+        return json(response, 200, {
+          protected: true,
+          effective_branch_protection_name: 'main',
+          enable_status_check: true,
+          status_check_contexts: ['ci'],
+        });
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const connection = [
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ];
+
+    const created = parseJson<{ created: boolean }>(
+      (
+        await invoke([
+          'pr',
+          'create',
+          ...connection,
+          '--title',
+          'Created title',
+          '--head',
+          'fix/race',
+          '--base',
+          'main',
+          '--body',
+          'Created body',
+        ])
+      ).output,
+    );
+    expect(created.created).toBe(true);
+
+    const updated = parseJson<{
+      updated: boolean;
+      pull_request: { title: string };
+    }>(
+      (
+        await invoke([
+          'pr',
+          'update',
+          ...connection,
+          '42',
+          '--title',
+          'Updated title',
+        ])
+      ).output,
+    );
+    expect(updated).toMatchObject({
+      updated: true,
+      pull_request: { title: 'Updated title' },
+    });
+
+    const checks = parseJson<{ checks: Record<string, unknown> }>(
+      (await invoke(['pr', 'checks', ...connection, '42'])).output,
+    );
+    expect(checks.checks).toMatchObject({
+      statuses: [
+        {
+          context: 'ci',
+          state: 'success',
+          description: 'green',
+          target_url: 'https://ci.example/run',
+          updated_at: '2026-01-02T00:00:00Z',
+        },
+      ],
+      required: [{ context: 'ci', state: 'success', matched: ['ci'] }],
+      protection: {
+        protected: true,
+        rule: 'main',
+        status_checks_enabled: true,
+      },
+      passes: true,
+    });
+
+    const mergeability = parseJson<{
+      mergeability: { mergeable: boolean; checks_pass: boolean };
+    }>((await invoke(['pr', 'mergeability', ...connection, '42'])).output);
+    expect(mergeability.mergeability).toMatchObject({
+      mergeable: true,
+      checks_pass: true,
+    });
+
+    const merge = parseJson<{
+      proof: { merged: boolean; merge_commit_sha: string };
+    }>(
+      (
+        await invoke([
+          'pr',
+          'merge',
+          ...connection,
+          '42',
+          '--expected-head',
+          'abc123',
+          '--method',
+          'squash',
+        ])
+      ).output,
+    );
+    expect(merge.proof).toMatchObject({
+      merged: true,
+      merge_commit_sha: 'merge456',
+    });
+  });
+
   it('degrades unavailable capability probes without failing status', async () => {
     const fixture = await loadFixture(16);
     const server = await startServer((_request, response, recorded) => {
@@ -446,6 +617,38 @@ describe('CLI contract', () => {
       probe: { source: 'swagger_unavailable', complete: false },
     });
   });
+
+  it.each([429, 500])(
+    'degrades capability probes when Swagger responds with HTTP %i',
+    async (status) => {
+      const fixture = await loadFixture(16);
+      const server = await startServer((_request, response, recorded) => {
+        if (recorded.url.endsWith('/api/v1/version')) {
+          return json(response, 200, fixture.version);
+        }
+        if (recorded.url.endsWith('/swagger.v1.json')) {
+          return json(response, status, { message: 'temporarily unavailable' });
+        }
+        return json(response, 404, { message: 'not found' });
+      });
+      servers.push(server);
+
+      const result = await invoke([
+        'status',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+
+      expect(result.exitCode).toBeUndefined();
+      expect(parseJson(result.output)).toMatchObject({
+        capabilities: {
+          pull_requests: false,
+          probe: { source: 'swagger_unavailable', complete: false },
+        },
+      });
+    },
+  );
 
   it('uses exit code 1 for runtime API failures', async () => {
     const server = await startServer((_request, response) =>

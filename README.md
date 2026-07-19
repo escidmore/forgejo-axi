@@ -4,7 +4,8 @@ Agent-facing, non-interactive CLI boundary for Forgejo pull request lifecycles. 
 
 ## Install from source
 
-Requires Node.js 20 or newer.
+Requires Node.js 20 or newer. Development checks also require an `openssl`
+executable for the ephemeral custom-CA HTTPS test.
 
 ```console
 npm ci

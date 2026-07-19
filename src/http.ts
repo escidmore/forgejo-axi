@@ -141,6 +141,17 @@ export class ForgejoHttpClient {
         { details: { from: safeUrl(url), to: safeUrl(target) } },
       );
     }
+    if (
+      (response.status === 301 || response.status === 302) &&
+      method !== 'GET' &&
+      method !== 'HEAD'
+    ) {
+      throw new ForgejoAxiError(
+        'Refusing ambiguous mutation redirect',
+        'INVALID_REDIRECT',
+        { details: { status: response.status, method } },
+      );
+    }
     const redirectedMethod = response.status === 303 ? 'GET' : method;
     return this.requestWithRedirects<T>(
       target,

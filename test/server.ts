@@ -28,19 +28,27 @@ export async function startServer(
   host = '127.0.0.1',
 ): Promise<FakeServer> {
   const requests: RecordedRequest[] = [];
+  let handlerError: unknown;
   const server = createServer(async (request, response) => {
-    const chunks: Buffer[] = [];
-    for await (const chunk of request) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      }
+      const recorded: RecordedRequest = {
+        method: request.method ?? 'GET',
+        url: request.url ?? '/',
+        headers: request.headers,
+        body: Buffer.concat(chunks).toString('utf8'),
+      };
+      requests.push(recorded);
+      await handler(request, response, recorded);
+    } catch (error) {
+      handlerError ??= error;
+      response.destroy(
+        error instanceof Error ? error : new Error(String(error)),
+      );
     }
-    const recorded: RecordedRequest = {
-      method: request.method ?? 'GET',
-      url: request.url ?? '/',
-      headers: request.headers,
-      body: Buffer.concat(chunks).toString('utf8'),
-    };
-    requests.push(recorded);
-    await handler(request, response, recorded);
   });
   server.listen(0, host);
   await once(server, 'listening');
@@ -54,6 +62,7 @@ export async function startServer(
     close: async () => {
       server.close();
       await once(server, 'close');
+      if (handlerError) throw handlerError;
     },
   };
 }

@@ -263,12 +263,15 @@ export class ForgejoService {
   ): Promise<Record<string, unknown>> {
     const response = await this.getPullRaw(repo, number);
     const body = response.body ?? '';
+    const bodyCharacters = [...body];
     const previewLimit = 500;
-    const truncated = !full && body.length > previewLimit;
+    const truncated = !full && bodyCharacters.length > previewLimit;
     return {
       ...normalizePull(this.config, repo, response),
-      body: truncated ? `${body.slice(0, previewLimit - 3)}...` : body,
-      body_length: body.length,
+      body: truncated
+        ? `${bodyCharacters.slice(0, previewLimit - 3).join('')}...`
+        : body,
+      body_length: bodyCharacters.length,
       body_truncated: truncated,
     };
   }
@@ -325,7 +328,19 @@ export class ForgejoService {
         throw error;
       }
       const raced = await this.findPull(repo, input.head, input.base, 'open');
-      if (!raced.pull_request) throw error;
+      if (!raced.pull_request) {
+        if (!raced.search_info.complete) {
+          throw new ForgejoAxiError(
+            'Pull request search reached the pagination safety ceiling',
+            'PAGINATION_INCOMPLETE',
+            {
+              details: { ...raced.search_info },
+              suggestions: ['Narrow the repository pull request set and retry'],
+            },
+          );
+        }
+        throw error;
+      }
       return this.reconcilePull(
         repo,
         raced.pull_request.number,
@@ -356,18 +371,7 @@ export class ForgejoService {
   }
 
   async checks(repo: RepositoryRef, number: number): Promise<ChecksResult> {
-    const pull = await this.getPull(repo, number);
-    const headSha = requireHeadSha(pull);
-    const statusesPage = await this.http.paginate<ApiStatus>(
-      `${repoPath(repo)}/statuses/${encodeURIComponent(headSha)}`,
-      { sort: 'recentupdate' },
-    );
-    const statuses = latestStatuses(statusesPage.items);
-    const branchResponse = await this.http.api<ApiBranch>({
-      path: `${repoPath(repo)}/branches/${encodeURIComponent(pull.base)}`,
-      allowEncodedSlash: true,
-    });
-    return evaluateChecks(headSha, statuses, branchResponse.data);
+    return this.checksForPull(repo, await this.getPull(repo, number));
   }
 
   async mergeability(
@@ -375,7 +379,7 @@ export class ForgejoService {
     number: number,
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
-    const checks = await this.checks(repo, number);
+    const checks = await this.checksForPull(repo, pull);
     if (pull.merged) {
       return {
         number,
@@ -450,6 +454,23 @@ export class ForgejoService {
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
     return { ...mergedProof(pull) };
+  }
+
+  private async checksForPull(
+    repo: RepositoryRef,
+    pull: PullRequestIdentity,
+  ): Promise<ChecksResult> {
+    const headSha = requireHeadSha(pull);
+    const statusesPage = await this.http.paginate<ApiStatus>(
+      `${repoPath(repo)}/statuses/${encodeURIComponent(headSha)}`,
+      { sort: 'recentupdate' },
+    );
+    const statuses = latestStatuses(statusesPage.items);
+    const branchResponse = await this.http.api<ApiBranch>({
+      path: `${repoPath(repo)}/branches/${encodeURIComponent(pull.base)}`,
+      allowEncodedSlash: true,
+    });
+    return evaluateChecks(headSha, statuses, branchResponse.data);
   }
 
   private async getPullRaw(
@@ -532,6 +553,8 @@ export class ForgejoService {
           'NOT_FOUND',
           'AUTH_REQUIRED',
           'FORBIDDEN',
+          'RATE_LIMITED',
+          'API_ERROR',
           'TIMEOUT',
           'NETWORK_ERROR',
           'INVALID_RESPONSE',
