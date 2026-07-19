@@ -46,3 +46,6 @@ jobs:
         with:
           online-audits: false
           persona: pedantic
+          # SARIF upload needs security-events: write; keep the token
+          # read-only and gate on zizmor's exit code instead.
+          advanced-security: false
