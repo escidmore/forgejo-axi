@@ -1,0 +1,56 @@
+{
+  "name": "forgejo-axi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent-facing CLI boundary for Forgejo pull request lifecycles",
+  "keywords": [
+    "axi",
+    "forgejo",
+    "pull-request"
+  ],
+  "homepage": "https://github.com/escidmore/forgejo-axi#readme",
+  "bugs": "https://github.com/escidmore/forgejo-axi/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/escidmore/forgejo-axi.git"
+  },
+  "type": "module",
+  "bin": {
+    "forgejo-axi": "./dist/bin/forgejo-axi.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "AGENTS.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . && prettier --check .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:smoke": "npm run build && node scripts/smoke.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:smoke",
+    "prepublishOnly": "npm run check"
+  },
+  "dependencies": {
+    "@toon-format/toon": "2.1.0",
+    "axi-sdk-js": "0.1.8",
+    "minimatch": "10.2.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.17.0",
+    "eslint": "10.1.0",
+    "globals": "17.4.0",
+    "prettier": "3.8.1",
+    "typescript": "5.9.2",
+    "typescript-eslint": "8.58.0",
+    "vitest": "3.2.7"
+  }
+}
