@@ -14,6 +14,8 @@ forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [conne
 forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state STATE]
 forgejo-axi pr list --repo OWNER/REPO [--state STATE] [--limit N|--full] [--fields LIST|all]
 forgejo-axi pr view --repo OWNER/REPO NUMBER [--full]
+forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full]
+forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full]
 forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY] [--draft]
 forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--base BRANCH] [--state open|closed]
 forgejo-axi pr checks --repo OWNER/REPO NUMBER
@@ -88,6 +90,8 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `pr view`: `{pull_request:{...identity,body,body_length,body_truncated}}`. `body` is a 500-Unicode-code-point preview by default and complete with `--full`; `body_length` is measured in Unicode code points.
 - `pr create`: `{created,updated,pull_request}`. `pr update`: `{updated,pull_request}`. Existing desired state is exit-0 and mutation-free. Creation refuses with `PAGINATION_INCOMPLETE` if either its initial duplicate search or its post-conflict race-recovery search reaches the pagination ceiling without finding the pull request.
 - `pr checks`: `{checks}`; `pr mergeability`: `{mergeability}`; `pr merge` and `pr merged`: `{proof}`.
+- `pr reviews`: `{reviews,page_info,next?}`. A pull request with no reviews is `reviews: []` with `page_info.fetched=0` and exit `0`.
+- `pr diff`: `{diff,diff_info:{lines,displayed,truncated},next?}`. An empty diff is `diff: ""` with `diff_info.lines=0` and exit `0`.
 - `label list`: `{labels,page_info,next?}`. A repository with no labels is `labels: []` with `page_info.fetched=0` and exit `0`.
 - `label create`: `{created,updated,label}`. `label edit`: `{updated,label}`. `label delete`: `{deleted,label}`.
 - `issue list`: `{issues,page_info,next?}`. Rows carry the selected identity fields, defaulting to `number,title,state,labels`. A repository with no matching issues is `issues: []` with `page_info.fetched=0` and exit `0`.
@@ -109,6 +113,14 @@ Mergeability is `{number, url, head_sha, forgejo_mergeable, checks_pass, mergeab
 Merge requires `--expected-head`. The expected SHA is verified before returning any proof, including already-merged and post-error recovery paths, and Forgejo's atomic `head_commit_id` guard is sent for the mutation. A head mismatch is `HEAD_CHANGED` and is never retried against the new head.
 
 Merged-state proof always has `{merged, number, url, head_sha, merge_commit_sha, merged_at, merged_by}`. For an unmerged pull request, `merged=false` and unavailable merge fields are `null`; consumers never receive a smaller undocumented shape.
+
+A review identity is `{id, api_url, user, state, stale, official, dismissed, commit_id, submitted_at, body, body_length, body_truncated, comments}`. `api_url` is constructed from the configured canonical base URL and repository identity, not trusted response links. `state` is Forgejo's verdict — `APPROVED`, `REQUEST_CHANGES`, `COMMENT`, `PENDING`, or `REQUEST_REVIEW` — and is `null` when Forgejo reports no verdict that maps to one of those, which it signals with an empty string rather than by omitting the field. `submitted_at` is `null` when Forgejo has recorded no submission time, which is how an unsubmitted review requesting a reviewer is reported. `body` follows the same preview rules as `pr view`, and `--full` expands review and comment bodies as well as displaying every review.
+
+A review comment identity is `{id, api_url, path, position, original_position, commit_id, original_commit_id, diff_hunk, user, resolved_by, created_at, updated_at, body, body_length, body_truncated}`. `path` names the file the comment marks. A comment on a line the change adds is anchored by `position` and `commit_id`; a comment on a line the change removes is anchored by `original_position` and `original_commit_id` instead, so a consumer locating a comment reads whichever pair is non-null. Forgejo reports an anchor it does not have as an empty string or a zero rather than by omitting the field, and both are normalized to `null` here so that a missing anchor cannot be read as line `0`. `resolved_by` is a username or `null`. A review reporting no inline comments is not queried for them, so `comments: []` costs no request.
+
+Reviews are read-only. Submitting, dismissing, and deleting reviews are reachable only through `api`, so no review write path exists in the command surface.
+
+`pr diff` returns the unified diff Forgejo generates for the pull request, so no pull ref has to be fetched. The TOON view prints the first 30 lines and `diff_info` reports the elision; `--full` and `--json` each return every line. `diff_info.lines` counts the complete diff, not the displayed excerpt.
 
 A label identity is `{id, name, color, description, is_archived, api_url}`. `api_url` is constructed from the configured canonical base URL and repository identity, not trusted response links. `color` is normalized to a lowercase `#rrggbb` string; a value Forgejo returns in another form is passed through unchanged. Labels are repository-scoped only.
 

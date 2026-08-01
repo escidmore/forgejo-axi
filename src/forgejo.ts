@@ -101,6 +101,34 @@ interface ApiComment {
   updated_at?: string;
 }
 
+interface ApiPullReview {
+  id?: number;
+  body?: string;
+  state?: string;
+  commit_id?: string;
+  stale?: boolean;
+  official?: boolean;
+  dismissed?: boolean;
+  comments_count?: number;
+  submitted_at?: string;
+  user?: ApiUser;
+}
+
+interface ApiPullReviewComment {
+  id?: number;
+  body?: string;
+  path?: string;
+  position?: number;
+  original_position?: number;
+  commit_id?: string;
+  original_commit_id?: string;
+  diff_hunk?: string;
+  user?: ApiUser;
+  resolver?: ApiUser;
+  created_at?: string;
+  updated_at?: string;
+}
+
 interface ApiActionRun {
   id?: number;
   title?: string;
@@ -199,6 +227,36 @@ export interface CommentIdentity extends BodyPreview {
   user: string | null;
   created_at: string | null;
   updated_at: string | null;
+}
+
+/** One inline review comment, anchored to the file and diff position it marks. */
+export interface ReviewCommentIdentity extends BodyPreview {
+  id: number;
+  api_url: string;
+  path: string | null;
+  position: number | null;
+  original_position: number | null;
+  commit_id: string | null;
+  original_commit_id: string | null;
+  diff_hunk: string;
+  user: string | null;
+  resolved_by: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** One submitted review: who reviewed, the verdict, and the comments they left. */
+export interface ReviewIdentity extends BodyPreview {
+  id: number;
+  api_url: string;
+  user: string | null;
+  state: string | null;
+  stale: boolean;
+  official: boolean;
+  dismissed: boolean;
+  commit_id: string | null;
+  submitted_at: string | null;
+  comments: ReviewCommentIdentity[];
 }
 
 export interface IssueFilters {
@@ -622,6 +680,79 @@ export class ForgejoService {
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
     return { ...mergedProof(pull) };
+  }
+
+  async listReviews(
+    repo: RepositoryRef,
+    number: number,
+    full: boolean,
+  ): Promise<Paginated<ReviewIdentity>> {
+    const page = await this.http.paginate<ApiPullReview>(
+      `${repoPath(repo)}/pulls/${number}/reviews`,
+    );
+    const reviews: ReviewIdentity[] = [];
+    for (const review of page.items) {
+      const id = requireReviewId(review);
+      // A review that reports no inline comments needs no second request; an
+      // absent count is treated as unknown and fetched.
+      const comments =
+        review.comments_count === 0
+          ? []
+          : await this.reviewComments(repo, number, id, full);
+      reviews.push(
+        normalizeReview(this.config, repo, review, {
+          id,
+          pull: number,
+          comments,
+          full,
+        }),
+      );
+    }
+    return { ...page, items: reviews };
+  }
+
+  async diffPull(repo: RepositoryRef, number: number): Promise<string> {
+    // The route produces text/plain, so the body arrives verbatim. Leaving it
+    // unraw keeps the client's token redaction on the response.
+    const response = await this.http.api<string>({
+      path: `${repoPath(repo)}/pulls/${number}.diff`,
+      accept: 'text/plain',
+    });
+    // An empty diff arrives as an empty body, which the client reports as null.
+    // Anything else non-textual is a malformed response, not an empty diff.
+    if (response.data === null || response.data === undefined) return '';
+    if (typeof response.data !== 'string') {
+      throw new ForgejoAxiError(
+        'Forgejo returned a non-text diff response',
+        'INVALID_RESPONSE',
+      );
+    }
+    return response.data;
+  }
+
+  /** Forgejo serves a review's comments in one response; the route declares no paging. */
+  private async reviewComments(
+    repo: RepositoryRef,
+    pull: number,
+    review: number,
+    full: boolean,
+  ): Promise<ReviewCommentIdentity[]> {
+    const response = await this.http.api<ApiPullReviewComment[]>({
+      path: `${repoPath(repo)}/pulls/${pull}/reviews/${review}/comments`,
+    });
+    if (!Array.isArray(response.data)) {
+      throw new ForgejoAxiError(
+        'Forgejo returned a non-array review comment response',
+        'INVALID_RESPONSE',
+      );
+    }
+    return response.data.map((comment) =>
+      normalizeReviewComment(this.config, repo, comment, {
+        pull,
+        review,
+        full,
+      }),
+    );
   }
 
   async listLabels(repo: RepositoryRef): Promise<Paginated<LabelIdentity>> {
@@ -1465,6 +1596,79 @@ function normalizeComment(
     created_at: comment.created_at ?? null,
     updated_at: comment.updated_at ?? null,
     ...previewBody(comment.body, full),
+  };
+}
+
+function requireReviewId(review: ApiPullReview): number {
+  if (!Number.isSafeInteger(review.id) || !review.id || review.id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo review response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  return review.id;
+}
+
+function normalizeReview(
+  config: ConnectionConfig,
+  repo: RepositoryRef,
+  review: ApiPullReview,
+  context: {
+    id: number;
+    pull: number;
+    comments: ReviewCommentIdentity[];
+    full: boolean;
+  },
+): ReviewIdentity {
+  const base = `${canonicalRepoApiUrl(config, repo)}/pulls/${context.pull}`;
+  return {
+    id: context.id,
+    api_url: `${base}/reviews/${context.id}`,
+    user: review.user?.login ?? null,
+    // Forgejo reports an unmapped verdict as an empty string rather than
+    // omitting it, so the absent case has to be matched on falsiness.
+    state: review.state || null,
+    stale: review.stale ?? false,
+    official: review.official ?? false,
+    dismissed: review.dismissed ?? false,
+    commit_id: review.commit_id || null,
+    submitted_at: timestampOrNull(review.submitted_at),
+    comments: context.comments,
+    ...previewBody(review.body, context.full),
+  };
+}
+
+function normalizeReviewComment(
+  config: ConnectionConfig,
+  repo: RepositoryRef,
+  comment: ApiPullReviewComment,
+  context: { pull: number; review: number; full: boolean },
+): ReviewCommentIdentity {
+  if (!Number.isSafeInteger(comment.id) || !comment.id || comment.id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo review comment response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  const base = `${canonicalRepoApiUrl(config, repo)}/pulls/${context.pull}`;
+  // Forgejo never omits these keys; it sends an empty string or a zero for an
+  // anchor it does not have, so `||` is what turns "not reported" into null.
+  // A comment on a removed line carries only the original_ anchor, which is
+  // why both sides are reported rather than collapsed into one position.
+  return {
+    id: comment.id,
+    api_url: `${base}/reviews/${context.review}/comments/${comment.id}`,
+    path: comment.path || null,
+    position: comment.position || null,
+    original_position: comment.original_position || null,
+    commit_id: comment.commit_id || null,
+    original_commit_id: comment.original_commit_id || null,
+    diff_hunk: comment.diff_hunk ?? '',
+    user: comment.user?.login ?? null,
+    resolved_by: comment.resolver?.login ?? null,
+    created_at: timestampOrNull(comment.created_at),
+    updated_at: timestampOrNull(comment.updated_at),
+    ...previewBody(comment.body, context.full),
   };
 }
 
