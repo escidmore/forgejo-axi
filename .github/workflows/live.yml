@@ -1,0 +1,74 @@
+---
+name: Live lanes
+
+# Started by hand, never by a push or a pull request, so this can never gate a
+# merge. Each lane also binds to a deployment environment, which is where the
+# required reviewers that make it manually approved are configured.
+'on':
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# The lanes mutate a real repository. Queue a second dispatch behind the first
+# rather than letting two runs write to the same host at once.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Forgejo ${{ matrix.lane }}
+    runs-on: ubuntu-latest
+    environment: ${{ matrix.environment }}
+    # A hung lane would otherwise hold the concurrency group above for six
+    # hours, blocking every later dispatch from cleaning up after it.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: '15'
+            environment: forgejo-15-lts
+          - lane: '16'
+            environment: forgejo-16
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # A host behind a private CA needs the certificate on disk; a host that
+      # does not sets no secret and the lane runs without --ca-file.
+      - name: Materialise the expected CA
+        env:
+          CA_PEM: ${{ secrets.FORGEJO_CA_PEM }}
+        run: |
+          if [ -n "$CA_PEM" ]; then
+            printf '%s\n' "$CA_PEM" > "$RUNNER_TEMP/forgejo-ca.pem"
+            echo "FORGEJO_CA_FILE=$RUNNER_TEMP/forgejo-ca.pem" >> "$GITHUB_ENV"
+          fi
+
+      # Every value comes from the job's own environment, so the two lanes
+      # cannot see each other's token or repository. The harness refuses to
+      # mutate unless the host reports FORGEJO_EXPECT_VERSION and resolves
+      # FORGEJO_LIVE_REPO to the name and canonical URL it was given.
+      #
+      # The endpoint and the repository are secrets rather than variables even
+      # though neither is a credential: this repository is public, the harness
+      # prints the host it reached, and only secrets are masked in run logs.
+      # Keeping them here is what stops a public log from naming the lane hosts.
+      - name: Run the lane
+        env:
+          LANE: ${{ matrix.lane }}
+          FORGEJO_BASE_URL: ${{ secrets.FORGEJO_BASE_URL }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_15_BASE_URL: ${{ secrets.FORGEJO_BASE_URL }}
+          FORGEJO_15_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_LIVE_REPO: ${{ secrets.FORGEJO_LIVE_REPO }}
+          FORGEJO_EXPECT_VERSION: ${{ vars.FORGEJO_EXPECT_VERSION }}
+        run: npm run test:live -- "$LANE"

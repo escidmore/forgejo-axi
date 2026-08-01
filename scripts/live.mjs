@@ -8,18 +8,23 @@
 //   FORGEJO_BASE_URL / FORGEJO_TOKEN            (the 16 lane)
 //   FORGEJO_15_BASE_URL / FORGEJO_15_TOKEN      (the 15 lane)
 //   FORGEJO_LIVE_REPO=owner/disposable          (arms the harness)
+//   FORGEJO_EXPECT_VERSION=16.0                 (optional; overrides the lane)
+//   FORGEJO_CA_FILE=/path/to/ca.pem             (optional)
 //
-// This mutates FORGEJO_LIVE_REPO. Two independent guards must pass first: the
+// This mutates FORGEJO_LIVE_REPO. Three independent guards must pass first: the
 // harness reads its target from FORGEJO_LIVE_REPO rather than the ordinary
-// FORGEJO_REPOSITORY, so everyday configuration can never arm it by accident,
-// and it refuses unless the host it actually reached reports the version the
-// lane expects. Pointing this at a real repository is unrecoverable.
+// FORGEJO_REPOSITORY, so everyday configuration can never arm it by accident;
+// it refuses unless the host it actually reached reports the version the lane
+// expects; and it refuses unless the host's own response for the armed
+// repository names that repository back. Every guard exits 2 before writing
+// anything. Pointing this at a real repository is unrecoverable.
 import { Buffer } from 'node:buffer';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { URL } from 'node:url';
+import { promisify } from 'node:util';
 
 const CLI = new URL('../dist/bin/forgejo-axi.js', import.meta.url).pathname;
 
@@ -51,7 +56,13 @@ const BASE_URL = required(LANE.base);
 const TOKEN_ENV = LANE.token;
 const TOKEN = required(TOKEN_ENV);
 const REPO = required('FORGEJO_LIVE_REPO');
-const EXPECT_VERSION = LANE.expect;
+// CI supplies the expected major.minor alongside the endpoint it belongs to, so
+// a lane pointed at a new host is told what that host must report rather than
+// inheriting an expectation compiled in here.
+// `||`, not `??`: an unset CI variable arrives as an empty string, and an empty
+// expectation would compare equal to an empty reported version — the guard below
+// would pass against a host that never said what it was.
+const EXPECT_VERSION = process.env['FORGEJO_EXPECT_VERSION'] || LANE.expect;
 const CA_FILE = process.env['FORGEJO_CA_FILE'];
 
 const CONN = [
@@ -114,6 +125,82 @@ async function raw(method, path, body) {
   };
 }
 
+// Cleanup runs in `finally`, where one throw would strand every step after it —
+// and the step most expensive to recover by hand is a protected branch. Each
+// teardown call goes through here so a failure costs one object, not the rest.
+const discard = async (method, path, body) => {
+  try {
+    return await raw(method, path, body);
+  } catch {
+    return { status: 0, data: null };
+  }
+};
+
+// Concurrency is the only way to reach the race-recovery path, so this variant
+// runs invocations in parallel; `cli` stays synchronous for everything else.
+const execFileAsync = promisify(execFile);
+async function cliConcurrent(args) {
+  const full = [...args, '--json', ...CONN];
+  let out;
+  try {
+    out = (await execFileAsync('node', [CLI, ...full], { encoding: 'utf8' }))
+      .stdout;
+  } catch (error) {
+    out = String(error.stdout ?? '');
+  }
+  try {
+    return JSON.parse(out);
+  } catch {
+    return { error: out.slice(0, 200) };
+  }
+}
+
+const seedStatus = (sha, state, context) =>
+  raw('POST', `repos/${REPO}/statuses/${sha}`, {
+    state,
+    context,
+    description: 'seeded by the live matrix',
+  });
+
+// `mergeable: true` does not mean every method is ready: Forgejo answers 405
+// "please try again later" while it still works out a rebase. Retrying is safe
+// because every attempt carries the same expected head, so a head that moved
+// underneath is refused rather than merged.
+async function mergeWhenReady(number, method, expectedHead) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const result = cli(
+      [
+        'pr',
+        'merge',
+        '--repo',
+        REPO,
+        String(number),
+        '--method',
+        method,
+        '--expected-head',
+        expectedHead,
+      ],
+      { allowFail: true },
+    );
+    if (result.code !== 'API_ERROR' || result.details?.status !== 405)
+      return result;
+    await sleep(1000);
+  }
+  return { code: 'STILL_NOT_MERGEABLE' };
+}
+
+// Forgejo computes mergeability in the background and answers 405 "please try
+// again later" until that lands. A fake server settles instantly, so this wait
+// only exists against a real one.
+async function settle(number) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = await raw('GET', `repos/${REPO}/pulls/${number}`);
+    if (state.data?.mergeable === true) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
 // ---- refuse before any mutation ---------------------------------------------
 // Reaching the wrong host is the failure that cannot be undone, so prove the
 // identity of the host actually answering before writing anything to it.
@@ -134,6 +221,19 @@ if (majorMinor !== EXPECT_VERSION) {
   );
   process.exit(2);
 }
+// The right host is still the wrong target if the armed repository is not the
+// one it serves under that name. This asks the host directly rather than going
+// through `repo view`, whose `full_name` falls back to the name we supplied and
+// whose `url` is rebuilt from our own base URL — both would agree with us no
+// matter what the host actually holds.
+const liveRepo = await raw('GET', `repos/${REPO}`);
+if (liveRepo.status !== 200 || liveRepo.data?.full_name !== REPO) {
+  console.error(
+    `Refusing to mutate: ${BASE_URL} answered ${liveRepo.status} for ${REPO}` +
+      `${liveRepo.data?.full_name ? ` and named it ${liveRepo.data.full_name}` : ''}`,
+  );
+  process.exit(2);
+}
 console.log(
   `host ${BASE_URL} — Forgejo ${version}, actions_job_logs=${probed.capabilities?.actions_job_logs}`,
 );
@@ -142,10 +242,33 @@ const BRANCH = `live-probe-${Date.now().toString(36)}`;
 const created = {
   issues: [],
   labels: [],
-  pageLabels: [],
+  labelIds: [],
   milestone: null,
-  pull: null,
+  pulls: [],
+  branches: [],
+  protection: null,
 };
+
+// Every probe branch carries the per-run prefix, so cleanup can never reach a
+// branch that predates this run.
+// Throwing rather than returning a status keeps a failed branch from surfacing
+// later as an unrelated mystery: every assertion downstream of a probe branch
+// depends on it existing.
+async function probeBranch(name, from) {
+  const response = await raw('POST', `repos/${REPO}/contents/${name}.txt`, {
+    content: Buffer.from(`probe ${name}\n`).toString('base64'),
+    message: `live: ${name}`,
+    ...(from === undefined ? {} : { branch: from }),
+    new_branch: name,
+  });
+  if (response.status !== 201) {
+    throw new Error(
+      `could not create probe branch ${name} => ${response.status}`,
+    );
+  }
+  created.branches.push(name);
+  return response;
+}
 
 try {
   // ---- seed ----------------------------------------------------------------
@@ -441,7 +564,7 @@ try {
       name: `live-page-${String(i).padStart(2, '0')}`,
       color: '#ededed',
     });
-    if (made.data?.id) created.pageLabels.push(made.data.id);
+    if (made.data?.id) created.labelIds.push(made.data.id);
     paged.push(`live-page-${String(i).padStart(2, '0')}`);
   }
 
@@ -488,12 +611,7 @@ try {
     content: Buffer.from('base\n').toString('base64'),
     message: 'live: seed base',
   });
-  const branched = await raw('POST', `repos/${REPO}/contents/${BRANCH}.txt`, {
-    content: Buffer.from(`probe ${BRANCH}\n`).toString('base64'),
-    message: 'live: probe branch',
-    new_branch: BRANCH,
-  });
-  ok('create a unique probe branch', branched.status === 201, BRANCH);
+  await probeBranch(BRANCH);
 
   const pr = cli([
     'pr',
@@ -507,15 +625,16 @@ try {
     '--title',
     'live: probe',
   ]);
-  created.pull = pr.pull_request?.number ?? null;
-  ok('open a pull request', Number.isInteger(created.pull));
+  const PULL = pr.pull_request?.number ?? null;
+  if (PULL !== null) created.pulls.push(PULL);
+  ok('open a pull request', Number.isInteger(PULL));
 
   const posted = cli([
     'issue',
     'comment',
     '--repo',
     REPO,
-    String(created.pull),
+    String(PULL),
     '--body',
     'live: threaded into PR discussion',
   ]);
@@ -523,10 +642,7 @@ try {
     'issue comment accepts a pull request number',
     Number.isInteger(posted.comment?.id),
   );
-  const prThread = await raw(
-    'GET',
-    `repos/${REPO}/issues/${created.pull}/comments`,
-  );
+  const prThread = await raw('GET', `repos/${REPO}/issues/${PULL}/comments`);
   ok(
     'the comment lands in the pull request discussion',
     prThread.data.some((c) => c.body === 'live: threaded into PR discussion') &&
@@ -534,7 +650,7 @@ try {
   );
   ok(
     'issue view flags a pull request',
-    cli(['issue', 'view', '--repo', REPO, String(created.pull)]).issue
+    cli(['issue', 'view', '--repo', REPO, String(PULL)]).issue
       .is_pull_request === true,
   );
 
@@ -554,28 +670,22 @@ try {
     'issue list excludes pull requests',
     listed.issues.length > 0 &&
       listed.issues.every((i) => i.is_pull_request === false) &&
-      !listed.issues.some((i) => i.number === created.pull),
+      !listed.issues.some((i) => i.number === PULL),
   );
 
   // ---- pull request reads --------------------------------------------------
   ok(
     'pr list includes the open pull request',
     cli(['pr', 'list', '--repo', REPO, '--full']).pull_requests.some(
-      (p) => p.number === created.pull,
+      (p) => p.number === PULL,
     ),
   );
   ok(
     'pr find locates it by head branch',
     cli(['pr', 'find', '--repo', REPO, '--head', BRANCH]).pull_request
-      .number === created.pull,
+      .number === PULL,
   );
-  const prView = cli([
-    'pr',
-    'view',
-    '--repo',
-    REPO,
-    String(created.pull),
-  ]).pull_request;
+  const prView = cli(['pr', 'view', '--repo', REPO, String(PULL)]).pull_request;
   ok('pr view reports the head sha', /^[0-9a-f]{40}$/.test(prView.head_sha));
   ok(
     'pr update changes the title',
@@ -584,7 +694,7 @@ try {
       'update',
       '--repo',
       REPO,
-      String(created.pull),
+      String(PULL),
       '--title',
       'live: probe (updated)',
     ]).pull_request.title === 'live: probe (updated)',
@@ -593,19 +703,15 @@ try {
   // ---- checks against real commit statuses ---------------------------------
   // An empty status set must read as none, never as a failure — a host without
   // Actions has no statuses to report and that is not a red check.
-  const empty = cli(['pr', 'checks', '--repo', REPO, String(created.pull)]);
+  const empty = cli(['pr', 'checks', '--repo', REPO, String(PULL)]);
   ok(
     'no statuses reads as none, not failure',
     empty.checks.reported === 0 && empty.checks.state === 'none',
     `state=${empty.checks.state}`,
   );
 
-  await raw('POST', `repos/${REPO}/statuses/${prView.head_sha}`, {
-    state: 'success',
-    context: 'live/probe',
-    description: 'seeded by the live matrix',
-  });
-  const green = cli(['pr', 'checks', '--repo', REPO, String(created.pull)]);
+  await seedStatus(prView.head_sha, 'success', 'live/probe');
+  const green = cli(['pr', 'checks', '--repo', REPO, String(PULL)]);
   ok(
     'pr checks aggregates a real commit status',
     green.checks.reported === 1 &&
@@ -618,7 +724,7 @@ try {
     'mergeability',
     '--repo',
     REPO,
-    String(created.pull),
+    String(PULL),
   ]);
   ok(
     'mergeability reflects the real head and checks',
@@ -628,20 +734,14 @@ try {
   );
 
   // ---- reviews and diff (read-only) ----------------------------------------
-  const noReviews = cli([
-    'pr',
-    'reviews',
-    '--repo',
-    REPO,
-    String(created.pull),
-  ]);
+  const noReviews = cli(['pr', 'reviews', '--repo', REPO, String(PULL)]);
   ok(
     'a pull request with no reviews lists none',
     noReviews.reviews.length === 0 && noReviews.page_info.fetched === 0,
     `fetched=${noReviews.page_info.fetched}`,
   );
 
-  const diff = cli(['pr', 'diff', '--repo', REPO, String(created.pull)]);
+  const diff = cli(['pr', 'diff', '--repo', REPO, String(PULL)]);
   ok(
     'pr diff returns the diff Forgejo generates for the pull request',
     diff.diff.includes('diff --git') &&
@@ -653,23 +753,19 @@ try {
   // Forgejo refuses to let an author approve their own pull request but accepts
   // a COMMENT review, which is what proves the verdict and the file-anchored
   // comment survive the round trip.
-  const submitted = await raw(
-    'POST',
-    `repos/${REPO}/pulls/${created.pull}/reviews`,
-    {
-      event: 'COMMENT',
-      body: 'live probe review',
-      comments: [
-        { path: `${BRANCH}.txt`, new_position: 1, body: 'live inline probe' },
-      ],
-    },
-  );
+  const submitted = await raw('POST', `repos/${REPO}/pulls/${PULL}/reviews`, {
+    event: 'COMMENT',
+    body: 'live probe review',
+    comments: [
+      { path: `${BRANCH}.txt`, new_position: 1, body: 'live inline probe' },
+    ],
+  });
   ok(
     'submit a COMMENT review on our own pull request',
     submitted.status === 200,
     `status=${submitted.status}`,
   );
-  const reviewed = cli(['pr', 'reviews', '--repo', REPO, String(created.pull)]);
+  const reviewed = cli(['pr', 'reviews', '--repo', REPO, String(PULL)]);
   const probe = reviewed.reviews.find(
     (review) => review.body === 'live probe review',
   );
@@ -688,68 +784,427 @@ try {
       'merge',
       '--repo',
       REPO,
-      String(created.pull),
+      String(PULL),
       '--expected-head',
       '0'.repeat(40),
     ],
     { allowFail: true },
   );
-  const stillOpen = await raw('GET', `repos/${REPO}/pulls/${created.pull}`);
+  const stillOpen = await raw('GET', `repos/${REPO}/pulls/${PULL}`);
   ok(
     'expected-head refuses a stale head without merging',
     raced.code === 'HEAD_CHANGED' && stillOpen.data?.merged === false,
     String(raced.code),
   );
 
-  // Forgejo computes mergeability in the background and answers 405 "please try
-  // again later" until that lands. A fake server settles instantly, so this wait
-  // only exists against a real one.
-  let settled = false;
-  for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
-    const state = await raw('GET', `repos/${REPO}/pulls/${created.pull}`);
-    settled = state.data?.mergeable === true;
-    if (!settled) await sleep(1000);
-  }
-  ok('forgejo settles mergeability in the background', settled);
+  ok('forgejo settles mergeability in the background', await settle(PULL));
 
   // ...and must go through when the head is the one we proved.
-  const merge = cli([
-    'pr',
-    'merge',
-    '--repo',
-    REPO,
-    String(created.pull),
-    '--method',
-    'squash',
-    '--expected-head',
-    prView.head_sha,
-  ]);
-  const afterMerge = await raw('GET', `repos/${REPO}/pulls/${created.pull}`);
+  const merge = await mergeWhenReady(PULL, 'squash', prView.head_sha);
+  const afterMerge = await raw('GET', `repos/${REPO}/pulls/${PULL}`);
   ok(
     'expected-head merges when the head matches',
     Boolean(merge.proof) && afterMerge.data?.merged === true,
+    String(merge.code ?? 'merged'),
   );
   ok(
     'pr merged proves the merge independently',
-    Boolean(cli(['pr', 'merged', '--repo', REPO, String(created.pull)]).proof),
+    Boolean(cli(['pr', 'merged', '--repo', REPO, String(PULL)]).proof),
+  );
+
+  // ---- the merge methods other than squash ---------------------------------
+  // Forgejo implements each `Do` value differently, so proving squash proves
+  // nothing about the other two. Each still goes through the expected-head guard.
+  for (const method of ['merge', 'rebase']) {
+    const branch = `${BRANCH}-${method}`;
+    await probeBranch(branch);
+    const opened = cli([
+      'pr',
+      'create',
+      '--repo',
+      REPO,
+      '--head',
+      branch,
+      '--base',
+      'main',
+      '--title',
+      `live: ${method}`,
+    ]);
+    const number = opened.pull_request.number;
+    created.pulls.push(number);
+    const merged = await mergeWhenReady(
+      number,
+      method,
+      opened.pull_request.head_sha,
+    );
+    const after = await raw('GET', `repos/${REPO}/pulls/${number}`);
+    ok(
+      `pr merge --method ${method} merges behind a proven head`,
+      merged.proof?.merged === true && after.data?.merged === true,
+      `merge_commit=${merged.proof?.merge_commit_sha ? 'yes' : 'none'}`,
+    );
+  }
+
+  // ---- pr create reconciles rather than duplicating ------------------------
+  const reconcileBranch = `${BRANCH}-reconcile`;
+  await probeBranch(reconcileBranch);
+  const openArgs = [
+    'pr',
+    'create',
+    '--repo',
+    REPO,
+    '--head',
+    reconcileBranch,
+    '--base',
+    'main',
+    '--body',
+    'reconcile probe',
+  ];
+  const firstOpen = cli([...openArgs, '--title', 'live: reconcile']);
+  created.pulls.push(firstOpen.pull_request.number);
+  ok(
+    'pr create opens a new pull request',
+    firstOpen.created === true && firstOpen.updated === false,
+  );
+  const repeated = cli([...openArgs, '--title', 'live: reconcile']);
+  ok(
+    'pr create against the desired state is exit 0 and mutation-free',
+    repeated.created === false &&
+      repeated.updated === false &&
+      repeated.pull_request.number === firstOpen.pull_request.number,
+  );
+  const retitled = cli([...openArgs, '--title', 'live: reconcile (moved)']);
+  ok(
+    'pr create reconciles a differing title onto the existing pull request',
+    retitled.created === false &&
+      retitled.updated === true &&
+      retitled.pull_request.number === firstOpen.pull_request.number &&
+      retitled.pull_request.title === 'live: reconcile (moved)',
+  );
+
+  // Forgejo refuses a second pull request for the same head and base with 409,
+  // which is the conflict `pr create` absorbs instead of failing on. Proving the
+  // absorption needs a pull request this CLI did not open, so it is created out
+  // of band first.
+  const adoptBranch = `${BRANCH}-adopt`;
+  await probeBranch(adoptBranch);
+  const outOfBand = await raw('POST', `repos/${REPO}/pulls`, {
+    title: 'live: opened out of band',
+    head: adoptBranch,
+    base: 'main',
+  });
+  if (!Number.isInteger(outOfBand.data?.number)) {
+    throw new Error(
+      `could not open a pull request out of band => ${outOfBand.status}`,
+    );
+  }
+  created.pulls.push(outOfBand.data.number);
+  const adopted = cli([
+    'pr',
+    'create',
+    '--repo',
+    REPO,
+    '--head',
+    adoptBranch,
+    '--base',
+    'main',
+    '--title',
+    'live: opened out of band',
+  ]);
+  ok(
+    'pr create reconciles onto a pull request it did not open',
+    adopted.created === false &&
+      adopted.updated === false &&
+      adopted.pull_request.number === outOfBand.data.number,
+    `number=${adopted.pull_request?.number}`,
+  );
+
+  // Forgejo's duplicate check is a read followed by an insert with no unique
+  // constraint behind it, so fully overlapping creates all pass the check and
+  // all succeed — the host answers 409 only once a previous create has landed.
+  // Race recovery cannot absorb a conflict Forgejo never raises; what the CLI
+  // must not do is fail. The note records how many rows the host actually made.
+  const raceBranch = `${BRANCH}-race`;
+  await probeBranch(raceBranch);
+  const racers = await Promise.all(
+    [0, 1, 2].map(() =>
+      cliConcurrent([
+        'pr',
+        'create',
+        '--repo',
+        REPO,
+        '--head',
+        raceBranch,
+        '--base',
+        'main',
+        '--title',
+        'live: race',
+      ]),
+    ),
+  );
+  const raceNumbers = [
+    ...new Set(
+      racers.map((r) => r.pull_request?.number).filter(Number.isInteger),
+    ),
+  ];
+  created.pulls.push(...raceNumbers);
+  ok(
+    'concurrent pr create returns a pull request to every caller',
+    racers.every((r) => Number.isInteger(r.pull_request?.number)),
+    `pull_requests=${raceNumbers.length}`,
+  );
+
+  // ---- required contexts against real branch protection --------------------
+  // Required-context semantics come from the base branch's protection rule, so
+  // the only way to prove them is to provision one and take it down again.
+  const protBase = `${BRANCH}-protected`;
+  const protHead = `${BRANCH}-protected-head`;
+  await probeBranch(protBase);
+  const protection = await raw('POST', `repos/${REPO}/branch_protections`, {
+    branch_name: protBase,
+    enable_status_check: true,
+    status_check_contexts: ['live/required'],
+  });
+  if (protection.status === 201) created.protection = protBase;
+  ok(
+    'provision a protected base branch with a required context',
+    protection.status === 201,
+    `status=${protection.status}`,
+  );
+  await probeBranch(protHead, protBase);
+  const protPull = cli([
+    'pr',
+    'create',
+    '--repo',
+    REPO,
+    '--head',
+    protHead,
+    '--base',
+    protBase,
+    '--title',
+    'live: required contexts',
+  ]);
+  const protNumber = protPull.pull_request.number;
+  const protSha = protPull.pull_request.head_sha;
+  created.pulls.push(protNumber);
+  const protChecks = () =>
+    cli(['pr', 'checks', '--repo', REPO, String(protNumber)]).checks;
+
+  const missing = protChecks();
+  ok(
+    'checks read protection from the real base branch',
+    missing.protection.protected === true &&
+      missing.protection.status_checks_enabled === true &&
+      missing.protection.rule === protBase,
+    `rule=${missing.protection.rule}`,
+  );
+  ok(
+    'a required context nothing has reported is missing',
+    missing.required_state === 'missing' &&
+      missing.passes === false &&
+      missing.required.some(
+        (item) => item.context === 'live/required' && item.state === 'missing',
+      ),
+    `required_state=${missing.required_state}`,
+  );
+
+  // The assertion that matters: a green status on some other context must not
+  // let a missing required context read as a pass.
+  await seedStatus(protSha, 'success', 'live/unrelated');
+  const unrelated = protChecks();
+  ok(
+    'an unrelated green status leaves the required context missing',
+    unrelated.state === 'success' &&
+      unrelated.required_state === 'missing' &&
+      unrelated.passes === false,
+    `state=${unrelated.state} required_state=${unrelated.required_state}`,
+  );
+
+  // Forgejo timestamps a status to the second, so each transition is separated
+  // enough that the newest one is unambiguous.
+  for (const state of ['pending', 'failure', 'success']) {
+    await sleep(1100);
+    await seedStatus(protSha, state, 'live/required');
+    const current = protChecks();
+    ok(
+      `a ${state} required context reports ${state}`,
+      current.required_state === state &&
+        current.passes === (state === 'success'),
+      `required_state=${current.required_state} passes=${current.passes}`,
+    );
+  }
+
+  // ---- label reconcile, collisions and archived state ----------------------
+  const reconcileLabel = 'live-reconcile';
+  const madeLabel = cli([
+    'label',
+    'create',
+    '--repo',
+    REPO,
+    reconcileLabel,
+    '--color',
+    '#ededed',
+    '--description',
+    'first',
+  ]);
+  if (madeLabel.created === true) created.labels.push(reconcileLabel);
+  ok('label create opens a new label', madeLabel.created === true);
+  const sameLabel = cli([
+    'label',
+    'create',
+    '--repo',
+    REPO,
+    reconcileLabel,
+    '--color',
+    '#ededed',
+    '--description',
+    'first',
+  ]);
+  ok(
+    'label create against the desired state is exit 0 and mutation-free',
+    sameLabel.created === false && sameLabel.updated === false,
+  );
+  const recolored = cli([
+    'label',
+    'create',
+    '--repo',
+    REPO,
+    reconcileLabel,
+    '--color',
+    '#00aabb',
+  ]);
+  ok(
+    'label create reconciles a differing color onto the existing label',
+    recolored.created === false &&
+      recolored.updated === true &&
+      recolored.label.color === '#00aabb',
+    `color=${recolored.label?.color}`,
+  );
+  const collided = cli(
+    ['label', 'edit', '--repo', REPO, reconcileLabel, '--name', 'live-bug'],
+    { allowFail: true },
+  );
+  ok(
+    'renaming a label onto a name the repository carries is refused',
+    collided.code === 'LABEL_EXISTS',
+    String(collided.code),
+  );
+
+  // Forgejo does not enforce label-name uniqueness, so an ambiguous name has to
+  // be reported rather than silently resolved to whichever row came first.
+  const duplicated = [];
+  for (let i = 0; i < 2; i += 1) {
+    const made = await raw('POST', `repos/${REPO}/labels`, {
+      name: 'live-duplicate',
+      color: '#ededed',
+    });
+    if (made.data?.id) {
+      duplicated.push(made.data.id);
+      created.labelIds.push(made.data.id);
+    }
+  }
+  const ambiguous = cli(
+    ['label', 'edit', '--repo', REPO, 'live-duplicate', '--description', 'x'],
+    { allowFail: true },
+  );
+  ok(
+    'an ambiguous label name reports both ids',
+    duplicated.length === 2 &&
+      ambiguous.code === 'LABEL_AMBIGUOUS' &&
+      duplicated.every((id) => ambiguous.details?.ids?.includes(id)),
+    `code=${ambiguous.code} ids=${JSON.stringify(ambiguous.details?.ids)}`,
+  );
+
+  // Forgejo re-derives archived state from every edit request, so an edit that
+  // forgets to resend it silently unarchives the label.
+  const archived = await raw('POST', `repos/${REPO}/labels`, {
+    name: 'live-archived',
+    color: '#ededed',
+  });
+  if (!Number.isInteger(archived.data?.id)) {
+    throw new Error(`could not seed an archived label => ${archived.status}`);
+  }
+  created.labelIds.push(archived.data.id);
+  await raw('PATCH', `repos/${REPO}/labels/${archived.data.id}`, {
+    is_archived: true,
+  });
+  const editedArchived = cli([
+    'label',
+    'edit',
+    '--repo',
+    REPO,
+    'live-archived',
+    '--description',
+    'still archived',
+  ]);
+  ok(
+    'editing an archived label preserves is_archived',
+    editedArchived.updated === true &&
+      editedArchived.label.is_archived === true &&
+      editedArchived.label.description === 'still archived',
+    `is_archived=${editedArchived.label?.is_archived}`,
+  );
+
+  // ---- api write verbs -----------------------------------------------------
+  const apiCreated = cli([
+    'api',
+    'POST',
+    `repos/${REPO}/labels`,
+    '--data',
+    JSON.stringify({ name: 'live-api', color: '#ededed' }),
+  ]);
+  const apiLabelId = apiCreated.data?.id;
+  if (Number.isInteger(apiLabelId)) created.labelIds.push(apiLabelId);
+  ok(
+    'api POST sends --data as the request body',
+    apiCreated.status === 201 && apiCreated.data?.name === 'live-api',
+    `status=${apiCreated.status}`,
+  );
+  const apiPatched = cli([
+    'api',
+    'PATCH',
+    `repos/${REPO}/labels/${apiLabelId}`,
+    '--data',
+    JSON.stringify({ description: 'via api' }),
+  ]);
+  ok(
+    'api PATCH sends --data as the request body',
+    apiPatched.status === 200 && apiPatched.data?.description === 'via api',
+    `status=${apiPatched.status}`,
+  );
+  const apiDeleted = cli([
+    'api',
+    'DELETE',
+    `repos/${REPO}/labels/${apiLabelId}`,
+  ]);
+  ok(
+    'api DELETE returns an empty success',
+    apiDeleted.status === 204 && apiDeleted.data === null,
+    `status=${apiDeleted.status}`,
+  );
+  const refused = cli(
+    ['api', 'GET', `repos/${REPO}/labels`, '--paginate', '--data', '{}'],
+    { allowFail: true },
+  );
+  ok(
+    'api refuses to combine --data with --paginate',
+    refused.code === 'VALIDATION_ERROR',
+    String(refused.code),
   );
 } catch (error) {
   ok('RUN ABORTED', false, String(error.message).slice(0, 400));
 } finally {
   let removed = 0;
-  if (created.pull) {
-    await raw('PATCH', `repos/${REPO}/pulls/${created.pull}`, {
+  let removedPulls = 0;
+  for (const number of created.pulls) {
+    await discard('PATCH', `repos/${REPO}/pulls/${number}`, {
       state: 'closed',
     });
-    const gone = await raw('DELETE', `repos/${REPO}/issues/${created.pull}`);
-    ok(
-      'pull request removed',
-      gone.status === 204,
-      gone.status === 204 ? 'deleted' : `closed only (${gone.status})`,
-    );
+    const gone = await discard('DELETE', `repos/${REPO}/issues/${number}`);
+    if (gone.status === 204) removedPulls += 1;
   }
   for (const number of created.issues) {
-    const gone = await raw('DELETE', `repos/${REPO}/issues/${number}`);
+    const gone = await discard('DELETE', `repos/${REPO}/issues/${number}`);
     if (gone.status === 204) removed += 1;
   }
   for (const name of created.labels) {
@@ -759,17 +1214,36 @@ try {
       /* best effort */
     }
   }
-  for (const id of created.pageLabels)
-    await raw('DELETE', `repos/${REPO}/labels/${id}`);
+  // A duplicated or archived name cannot be addressed by name, so these go by id.
+  for (const id of created.labelIds)
+    await discard('DELETE', `repos/${REPO}/labels/${id}`);
   if (created.milestone)
-    await raw('DELETE', `repos/${REPO}/milestones/${created.milestone}`);
-  await raw('DELETE', `repos/${REPO}/branches/${BRANCH}`);
-  // Both names carry the per-run branch suffix, so cleanup can never reach a
-  // file that predates this run.
-  for (const file of [`${BRANCH}-base.txt`, `${BRANCH}.txt`]) {
-    const head = await raw('GET', `repos/${REPO}/contents/${file}`);
+    await discard('DELETE', `repos/${REPO}/milestones/${created.milestone}`);
+  // Protection has to go before the branch it protects, or the branch survives.
+  // A leak here is the one the next run cannot clean up for itself, so it is
+  // reported rather than swallowed the way the label teardown is.
+  const leaked = [];
+  if (created.protection) {
+    const gone = await discard(
+      'DELETE',
+      `repos/${REPO}/branch_protections/${created.protection}`,
+    );
+    if (gone.status !== 204) leaked.push(`protection ${created.protection}`);
+  }
+  for (const branch of created.branches) {
+    const gone = await discard('DELETE', `repos/${REPO}/branches/${branch}`);
+    if (gone.status !== 204) leaked.push(`branch ${branch}`);
+  }
+  // A merged branch leaves its file behind on the base. Every name carries the
+  // per-run branch prefix, so cleanup can never reach a file that predates this
+  // run.
+  for (const file of [
+    `${BRANCH}-base.txt`,
+    ...created.branches.map((branch) => `${branch}.txt`),
+  ]) {
+    const head = await discard('GET', `repos/${REPO}/contents/${file}`);
     if (head.data?.sha)
-      await raw('DELETE', `repos/${REPO}/contents/${file}`, {
+      await discard('DELETE', `repos/${REPO}/contents/${file}`, {
         message: 'live: cleanup',
         sha: head.data.sha,
       });
@@ -778,6 +1252,16 @@ try {
     'cleanup removed every created issue',
     removed === created.issues.length,
     `${removed}/${created.issues.length}`,
+  );
+  ok(
+    'cleanup removed every created pull request',
+    removedPulls === created.pulls.length,
+    `${removedPulls}/${created.pulls.length}`,
+  );
+  ok(
+    'cleanup removed every branch and its protection',
+    leaked.length === 0,
+    leaked.join(', ') || `${created.branches.length} branches`,
   );
 }
 
