@@ -26,10 +26,7 @@ export function usageError(
   message: string,
   suggestions: string[] = [],
 ): ForgejoAxiError {
-  return new ForgejoAxiError(message, 'VALIDATION_ERROR', {
-    suggestions,
-    usage: true,
-  });
+  return new ForgejoAxiError(message, 'VALIDATION_ERROR', { suggestions });
 }
 
 export function asForgejoError(error: unknown): ForgejoAxiError {

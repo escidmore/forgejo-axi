@@ -11,7 +11,7 @@ import {
   type FlagSpec,
   type ParsedArgs,
 } from './args.js';
-import { resolveConnection, type ConnectionInput } from './config.js';
+import { resolveConnection } from './config.js';
 import { asForgejoError, usageError } from './errors.js';
 import {
   ForgejoService,
@@ -237,44 +237,49 @@ async function runApi(
   return { status: response.status, data: response.data };
 }
 
-async function runPull(
+type SubcommandHandler = (
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown> | string> {
-  const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpText('pr');
-  const key = `pr ${subcommand}`;
-  if (!Object.hasOwn(HELP, key)) {
-    throw usageError(`Unknown pr command: ${subcommand}`, [
-      'Run `forgejo-axi pr --help`',
-    ]);
-  }
-  const rest = args.slice(1);
-  if (rest.includes('--help')) return helpText(key);
-  switch (subcommand) {
-    case 'find':
-      return pullFind(rest, env);
-    case 'list':
-      return pullList(rest, env);
-    case 'reviews':
-      return pullReviews(rest, env);
-    case 'diff':
-      return pullDiff(rest, env);
-    case 'view':
-    case 'checks':
-    case 'mergeability':
-    case 'merged':
-      return pullRead(subcommand, rest, env);
-    case 'create':
-      return pullCreate(rest, env);
-    case 'update':
-      return pullUpdate(rest, env);
-    case 'merge':
-      return pullMerge(rest, env);
-    default:
-      throw usageError(`Unknown pr command: ${subcommand}`);
-  }
+) => Promise<Record<string, unknown>>;
+
+/** The shared help/validate/dispatch preamble of the pr/label/issue/run families. */
+function dispatch(
+  family: string,
+  handlers: Record<string, SubcommandHandler>,
+): (
+  args: string[],
+  env: NodeJS.ProcessEnv,
+) => Promise<Record<string, unknown> | string> {
+  return async (args, env) => {
+    const subcommand = args[0];
+    if (!subcommand || subcommand === '--help') return helpText(family);
+    const handler = Object.hasOwn(handlers, subcommand)
+      ? handlers[subcommand]
+      : undefined;
+    if (!handler) {
+      throw usageError(`Unknown ${family} command: ${subcommand}`, [
+        `Run \`forgejo-axi ${family} --help\``,
+      ]);
+    }
+    const rest = args.slice(1);
+    if (rest.includes('--help')) return helpText(`${family} ${subcommand}`);
+    return handler(rest, env);
+  };
 }
+
+const runPull = dispatch('pr', {
+  find: pullFind,
+  list: pullList,
+  reviews: pullReviews,
+  diff: pullDiff,
+  view: (args, env) => pullRead('view', args, env),
+  checks: (args, env) => pullRead('checks', args, env),
+  mergeability: (args, env) => pullRead('mergeability', args, env),
+  merged: (args, env) => pullRead('merged', args, env),
+  create: pullCreate,
+  update: pullUpdate,
+  merge: pullMerge,
+});
 
 async function pullFind(
   args: string[],
@@ -538,33 +543,12 @@ async function pullMerge(
   return { proof: await service.merge(repo, number, expectedHead, method) };
 }
 
-async function runLabel(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown> | string> {
-  const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpText('label');
-  const key = `label ${subcommand}`;
-  if (!Object.hasOwn(HELP, key)) {
-    throw usageError(`Unknown label command: ${subcommand}`, [
-      'Run `forgejo-axi label --help`',
-    ]);
-  }
-  const rest = args.slice(1);
-  if (rest.includes('--help')) return helpText(key);
-  switch (subcommand) {
-    case 'list':
-      return labelList(rest, env);
-    case 'create':
-      return labelCreate(rest, env);
-    case 'edit':
-      return labelEdit(rest, env);
-    case 'delete':
-      return labelDelete(rest, env);
-    default:
-      throw usageError(`Unknown label command: ${subcommand}`);
-  }
-}
+const runLabel = dispatch('label', {
+  list: labelList,
+  create: labelCreate,
+  edit: labelEdit,
+  delete: labelDelete,
+});
 
 async function labelList(
   args: string[],
@@ -667,39 +651,15 @@ function labelInput(parsed: ParsedArgs): LabelInput {
   };
 }
 
-async function runIssue(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown> | string> {
-  const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpText('issue');
-  const key = `issue ${subcommand}`;
-  if (!Object.hasOwn(HELP, key)) {
-    throw usageError(`Unknown issue command: ${subcommand}`, [
-      'Run `forgejo-axi issue --help`',
-    ]);
-  }
-  const rest = args.slice(1);
-  if (rest.includes('--help')) return helpText(key);
-  switch (subcommand) {
-    case 'list':
-      return issueList(rest, env);
-    case 'view':
-      return issueView(rest, env);
-    case 'create':
-      return issueCreate(rest, env);
-    case 'edit':
-      return issueEdit(rest, env);
-    case 'close':
-      return issueSetState(rest, env, 'closed');
-    case 'reopen':
-      return issueSetState(rest, env, 'open');
-    case 'comment':
-      return issueComment(rest, env);
-    default:
-      throw usageError(`Unknown issue command: ${subcommand}`);
-  }
-}
+const runIssue = dispatch('issue', {
+  list: issueList,
+  view: issueView,
+  create: issueCreate,
+  edit: issueEdit,
+  close: (args, env) => issueSetState(args, env, 'closed'),
+  reopen: (args, env) => issueSetState(args, env, 'open'),
+  comment: issueComment,
+});
 
 async function issueList(
   args: string[],
@@ -886,33 +846,12 @@ function commaList(raw: string): string[] {
     .filter((value) => value !== '');
 }
 
-async function runRun(
-  args: string[],
-  env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown> | string> {
-  const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpText('run');
-  const key = `run ${subcommand}`;
-  if (!Object.hasOwn(HELP, key)) {
-    throw usageError(`Unknown run command: ${subcommand}`, [
-      'Run `forgejo-axi run --help`',
-    ]);
-  }
-  const rest = args.slice(1);
-  if (rest.includes('--help')) return helpText(key);
-  switch (subcommand) {
-    case 'list':
-      return runList(rest, env);
-    case 'view':
-      return runView(rest, env);
-    case 'cancel':
-      return runCancel(rest, env);
-    case 'download':
-      return runDownload(rest, env);
-    default:
-      throw usageError(`Unknown run command: ${subcommand}`);
-  }
-}
+const runRun = dispatch('run', {
+  list: runList,
+  view: runView,
+  cancel: runCancel,
+  download: runDownload,
+});
 
 async function runList(
   args: string[],
@@ -937,7 +876,8 @@ async function runList(
   rejectDisplayFlagConflicts(full, requestedLimit, json);
   const repo = resolveRepo(parsed, env);
   const status = stringFlag(parsed, '--status');
-  if (status !== undefined) runStatusFlag(status);
+  if (status !== undefined && !RUN_STATUSES.includes(status))
+    throw usageError(`--status must be one of ${RUN_STATUSES.join(', ')}`);
   const branch = stringFlag(parsed, '--branch');
   const service = await serviceFor(parsed, env);
   if (!(await service.runCapabilities()).runs) return unsupportedResult('runs');
@@ -1043,11 +983,6 @@ const RUN_STATUSES = [
   'blocked',
 ];
 
-function runStatusFlag(value: string): void {
-  if (!RUN_STATUSES.includes(value))
-    throw usageError(`--status must be one of ${RUN_STATUSES.join(', ')}`);
-}
-
 function unsupportedResult(capability: string): Record<string, unknown> {
   return {
     supported: false,
@@ -1062,16 +997,16 @@ async function serviceFor(
   parsed: ParsedArgs,
   env: NodeJS.ProcessEnv,
 ): Promise<ForgejoService> {
-  const input: ConnectionInput = {};
-  const baseUrl = stringFlag(parsed, '--base-url');
-  const tokenEnv = stringFlag(parsed, '--token-env');
-  const timeoutMs = stringFlag(parsed, '--timeout-ms');
-  const caFile = stringFlag(parsed, '--ca-file');
-  if (baseUrl !== undefined) input.baseUrl = baseUrl;
-  if (tokenEnv !== undefined) input.tokenEnv = tokenEnv;
-  if (timeoutMs !== undefined) input.timeoutMs = timeoutMs;
-  if (caFile !== undefined) input.caFile = caFile;
-  return new ForgejoService(await resolveConnection(input, env));
+  const connection = await resolveConnection(
+    {
+      baseUrl: stringFlag(parsed, '--base-url'),
+      tokenEnv: stringFlag(parsed, '--token-env'),
+      timeoutMs: stringFlag(parsed, '--timeout-ms'),
+      caFile: stringFlag(parsed, '--ca-file'),
+    },
+    env,
+  );
+  return new ForgejoService(connection);
 }
 
 function resolveRepo(

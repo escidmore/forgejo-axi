@@ -4,10 +4,10 @@ import { positiveInteger } from './args.js';
 import { usageError, ForgejoAxiError } from './errors.js';
 
 export interface ConnectionInput {
-  baseUrl?: string;
-  tokenEnv?: string;
-  timeoutMs?: string;
-  caFile?: string;
+  baseUrl?: string | undefined;
+  tokenEnv?: string | undefined;
+  timeoutMs?: string | undefined;
+  caFile?: string | undefined;
 }
 
 export interface ConnectionConfig {
@@ -22,7 +22,6 @@ export interface ConnectionConfig {
 
 const ENCODED_PATH_HAZARD = /%(?:2e|2f|5c)/i;
 const TRUSTED_ENCODED_PATH_HAZARD = /%(?:2e|5c)/i;
-const ALPHANUMERIC = /^[A-Z0-9]$/;
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export async function resolveConnection(
@@ -107,10 +106,6 @@ export function canonicalizeBaseUrl(raw: string): URL {
   if (url.search || url.hash) {
     throw usageError('Base URL must not contain a query string or fragment');
   }
-  const segments = url.pathname.split('/');
-  if (segments.some((segment) => segment === '.' || segment === '..')) {
-    throw usageError('Base URL must not contain dot segments');
-  }
   url.pathname = `${url.pathname.replace(/\/+$/, '')}/`;
   return url;
 }
@@ -150,13 +145,13 @@ export function appendPath(
 }
 
 export function hostKey(url: URL): string {
-  return [...url.host.toUpperCase()]
-    .map((character) =>
-      ALPHANUMERIC.test(character)
-        ? character
-        : `_${character.codePointAt(0)?.toString(16).toUpperCase()}_`,
-    )
-    .join('');
+  return url.host
+    .toUpperCase()
+    .replace(
+      /[^A-Z0-9]/g,
+      (character) =>
+        `_${character.codePointAt(0)?.toString(16).toUpperCase()}_`,
+    );
 }
 
 function resolveToken(

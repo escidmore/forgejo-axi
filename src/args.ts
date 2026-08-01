@@ -1,3 +1,4 @@
+import { parseArgs as tokenize } from 'node:util';
 import { usageError } from './errors.js';
 
 type FlagKind = 'boolean' | 'value';
@@ -14,57 +15,46 @@ export function parseArgs(
   spec: FlagSpec,
   command: string,
 ): ParsedArgs {
+  const options: Record<string, { type: 'string' | 'boolean' }> = {};
+  for (const [name, kind] of Object.entries(spec)) {
+    options[name.slice(2)] = { type: kind === 'value' ? 'string' : 'boolean' };
+  }
+  // Non-strict tokenizing keeps every rejection, and its message, local.
+  const { positionals, tokens } = tokenize({
+    args: [...args],
+    options,
+    strict: false,
+    allowPositionals: true,
+    tokens: true,
+  });
   const flags: Record<string, string | boolean> = {};
-  const positionals: string[] = [];
-  const valid = Object.keys(spec).sort((left, right) =>
-    left.localeCompare(right),
-  );
-
-  for (let index = 0; index < args.length; index += 1) {
-    const argument = args[index];
-    if (argument === undefined) continue;
-    if (argument === '--') {
-      positionals.push(...args.slice(index + 1));
-      break;
-    }
-    if (!argument.startsWith('-')) {
-      positionals.push(argument);
-      continue;
-    }
-
-    const equals = argument.indexOf('=');
-    const name = equals === -1 ? argument : argument.slice(0, equals);
-    const inlineValue = equals === -1 ? undefined : argument.slice(equals + 1);
-    const kind = spec[name];
+  for (const token of tokens) {
+    if (token.kind !== 'option') continue;
+    const kind = spec[token.rawName];
     if (!kind) {
-      throw usageError(`Unknown flag ${name} for \`${command}\``, [
-        `Valid flags: ${valid.join(', ') || 'none'}`,
+      throw usageError(`Unknown flag ${token.rawName} for \`${command}\``, [
+        `Valid flags: ${Object.keys(spec).sort().join(', ') || 'none'}`,
         `Run \`forgejo-axi ${command} --help\``,
       ]);
     }
-    if (Object.hasOwn(flags, name)) {
-      throw usageError(`Flag ${name} may only be supplied once`);
+    if (Object.hasOwn(flags, token.rawName)) {
+      throw usageError(`Flag ${token.rawName} may only be supplied once`);
     }
-
     if (kind === 'boolean') {
-      if (inlineValue !== undefined) {
-        throw usageError(`${name} does not accept a value`);
+      if (token.value !== undefined) {
+        throw usageError(`${token.rawName} does not accept a value`);
       }
-      flags[name] = true;
+      flags[token.rawName] = true;
       continue;
     }
-
-    const value = inlineValue ?? args[index + 1];
     if (
-      value === undefined ||
-      (inlineValue === undefined && value.startsWith('-'))
+      token.value === undefined ||
+      (!token.inlineValue && token.value.startsWith('-'))
     ) {
-      throw usageError(`${name} requires a value`);
+      throw usageError(`${token.rawName} requires a value`);
     }
-    flags[name] = value;
-    if (inlineValue === undefined) index += 1;
+    flags[token.rawName] = token.value;
   }
-
   return { command, flags, positionals };
 }
 
@@ -94,19 +84,13 @@ export function requireOnePositional(
   parsed: ParsedArgs,
   label: string,
 ): string {
-  if (parsed.positionals.length !== 1) {
-    throw usageError(
-      parsed.positionals.length === 0
-        ? `${label} is required`
-        : `Unexpected arguments: ${parsed.positionals.slice(1).join(' ')}`,
-      [`Run \`forgejo-axi ${parsed.command} --help\``],
-    );
+  const [value, ...extra] = parsed.positionals;
+  const help = [`Run \`forgejo-axi ${parsed.command} --help\``];
+  if (extra.length > 0) {
+    throw usageError(`Unexpected arguments: ${extra.join(' ')}`, help);
   }
-  const value = parsed.positionals[0];
   if (!value) {
-    throw usageError(`${label} is required`, [
-      `Run \`forgejo-axi ${parsed.command} --help\``,
-    ]);
+    throw usageError(`${label} is required`, help);
   }
   return value;
 }

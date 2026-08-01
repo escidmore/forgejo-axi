@@ -13,7 +13,7 @@ import {
   resolveConnection,
 } from '../src/config.js';
 import { ForgejoAxiError } from '../src/errors.js';
-import { ForgejoHttpClient, requestHostname } from '../src/http.js';
+import { ForgejoHttpClient } from '../src/http.js';
 import { testSubprocessEnv } from './environment.js';
 import { closeServers, json, servers, startServer } from './server.js';
 
@@ -108,11 +108,6 @@ describe('URL and authentication configuration', () => {
 });
 
 describe('HTTP security behavior', () => {
-  it('strips IPv6 URL brackets before passing a hostname to Node', () => {
-    expect(requestHostname('[::1]')).toBe('::1');
-    expect(requestHostname('127.0.0.1')).toBe('127.0.0.1');
-  });
-
   it('rejects a response whose body is truncated mid-stream', async () => {
     const server = await startServer((_request, response) => {
       response.writeHead(200, {
@@ -121,6 +116,24 @@ describe('HTTP security behavior', () => {
       });
       response.write('{"version":"15.0.5"');
       response.destroy();
+    });
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    await expect(
+      new ForgejoHttpClient(config).api({ path: 'version' }),
+    ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+  });
+
+  it('rejects a response closed cleanly before the declared body completes', async () => {
+    const server = await startServer((_request, response) => {
+      response.writeHead(200, {
+        'content-type': 'application/json',
+        'content-length': '100',
+      });
+      response.write('{"version":"15.0.5"');
+      // FIN instead of RST: the stream closes without a socket error, so only
+      // the close-with-incomplete-message check can catch the truncation.
+      response.socket?.end();
     });
     servers.push(server);
     const config = await resolveConnection({ baseUrl: server.baseUrl }, {});

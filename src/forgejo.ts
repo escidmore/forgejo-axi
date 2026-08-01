@@ -361,7 +361,7 @@ export interface ChecksResult {
   };
 }
 
-export interface MergedProof {
+export type MergedProof = {
   merged: boolean;
   number: number;
   url: string;
@@ -369,7 +369,7 @@ export interface MergedProof {
   merge_commit_sha: string | null;
   merged_at: string | null;
   merged_by: string | null;
-}
+};
 
 interface PullSearchInfo {
   complete: boolean;
@@ -407,8 +407,8 @@ export class ForgejoService {
     const capabilities = await this.probeCapabilities();
     return {
       host: {
-        url: this.config.baseUrl.toString().replace(/\/$/, ''),
-        api_url: this.config.apiUrl.toString().replace(/\/$/, ''),
+        url: canonical(this.config.baseUrl),
+        api_url: canonical(this.config.apiUrl),
       },
       auth,
       server: { version: versionResponse.data.version ?? 'unknown' },
@@ -687,7 +687,7 @@ export class ForgejoService {
     number: number,
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
-    return { ...mergedProof(pull) };
+    return mergedProof(pull);
   }
 
   async listReviews(
@@ -1062,11 +1062,11 @@ export class ForgejoService {
   }> {
     const capabilities = await this.probeCapabilities();
     return {
-      runs: Boolean(capabilities['runs']),
-      run_jobs: Boolean(capabilities['run_jobs']),
-      run_cancel: Boolean(capabilities['run_cancel']),
-      run_artifacts: Boolean(capabilities['run_artifacts']),
-      job_logs: Boolean(capabilities['actions_job_logs']),
+      runs: capabilities.runs,
+      run_jobs: capabilities.run_jobs,
+      run_cancel: capabilities.run_cancel,
+      run_artifacts: capabilities.run_artifacts,
+      job_logs: capabilities.actions_job_logs,
     };
   }
 
@@ -1358,7 +1358,7 @@ export class ForgejoService {
     }
   }
 
-  private async probeCapabilities(): Promise<Record<string, unknown>> {
+  private async probeCapabilities(): Promise<CapabilityReport> {
     let document: unknown;
     try {
       const response = await this.http.root<unknown>({
@@ -1475,25 +1475,36 @@ function repoPath(repo: RepositoryRef): string {
   return `repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
 
+/** A canonical URL is emitted without its trailing slash. */
+function canonical(url: URL): string {
+  return url.toString().replace(/\/$/, '');
+}
+
+/** Forgejo ids and numbers are positive integers; anything else is a malformed response. */
+function requireId(value: number | undefined, message: string): number {
+  if (!Number.isSafeInteger(value) || !value || value < 1) {
+    throw new ForgejoAxiError(message, 'INVALID_RESPONSE');
+  }
+  return value;
+}
+
 function canonicalRepoUrl(
   config: ConnectionConfig,
   repo: RepositoryRef,
 ): string {
-  return appendPath(
-    config.baseUrl,
-    `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
-  )
-    .toString()
-    .replace(/\/$/, '');
+  return canonical(
+    appendPath(
+      config.baseUrl,
+      `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+    ),
+  );
 }
 
 function canonicalRepoApiUrl(
   config: ConnectionConfig,
   repo: RepositoryRef,
 ): string {
-  return appendPath(config.apiUrl, repoPath(repo))
-    .toString()
-    .replace(/\/$/, '');
+  return canonical(appendPath(config.apiUrl, repoPath(repo)));
 }
 
 function normalizePull(
@@ -1501,13 +1512,10 @@ function normalizePull(
   repo: RepositoryRef,
   pull: ApiPullRequest,
 ): PullRequestIdentity {
-  if (!Number.isSafeInteger(pull.number) || !pull.number || pull.number < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo pull response omitted a valid number',
-      'INVALID_RESPONSE',
-    );
-  }
-  const number = pull.number;
+  const number = requireId(
+    pull.number,
+    'Forgejo pull response omitted a valid number',
+  );
   return {
     number,
     url: `${canonicalRepoUrl(config, repo)}/pulls/${number}`,
@@ -1531,14 +1539,9 @@ function normalizeLabel(
   repo: RepositoryRef,
   label: ApiLabel,
 ): LabelIdentity {
-  if (!Number.isSafeInteger(label.id) || !label.id || label.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo label response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
+  const id = requireId(label.id, 'Forgejo label response omitted a valid id');
   return {
-    id: label.id,
+    id,
     name: label.name ?? '',
     color: normalizeLabelColor(label.color),
     description: label.description ?? '',
@@ -1559,17 +1562,10 @@ function normalizeIssue(
   repo: RepositoryRef,
   issue: ApiIssue,
 ): IssueIdentity {
-  if (
-    !Number.isSafeInteger(issue.number) ||
-    !issue.number ||
-    issue.number < 1
-  ) {
-    throw new ForgejoAxiError(
-      'Forgejo issue response omitted a valid number',
-      'INVALID_RESPONSE',
-    );
-  }
-  const number = issue.number;
+  const number = requireId(
+    issue.number,
+    'Forgejo issue response omitted a valid number',
+  );
   return {
     number,
     url: `${canonicalRepoUrl(config, repo)}/issues/${number}`,
@@ -1594,14 +1590,12 @@ function normalizeComment(
   comment: ApiComment,
   full: boolean,
 ): CommentIdentity {
-  if (!Number.isSafeInteger(comment.id) || !comment.id || comment.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo comment response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
+  const id = requireId(
+    comment.id,
+    'Forgejo comment response omitted a valid id',
+  );
   return {
-    id: comment.id,
+    id,
     api_url: `${canonicalRepoApiUrl(config, repo)}/issues/comments/${comment.id}`,
     user: comment.user?.login ?? null,
     created_at: comment.created_at ?? null,
@@ -1611,13 +1605,7 @@ function normalizeComment(
 }
 
 function requireReviewId(review: ApiPullReview): number {
-  if (!Number.isSafeInteger(review.id) || !review.id || review.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo review response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
-  return review.id;
+  return requireId(review.id, 'Forgejo review response omitted a valid id');
 }
 
 function normalizeReview(
@@ -1661,20 +1649,18 @@ function normalizeReviewComment(
   comment: ApiPullReviewComment,
   context: { pull: number; review: number; full: boolean },
 ): ReviewCommentIdentity {
-  if (!Number.isSafeInteger(comment.id) || !comment.id || comment.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo review comment response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
+  const id = requireId(
+    comment.id,
+    'Forgejo review comment response omitted a valid id',
+  );
   const base = `${canonicalRepoApiUrl(config, repo)}/pulls/${context.pull}`;
   // Forgejo never omits these keys; it sends an empty string or a zero for an
   // anchor it does not have, so `||` is what turns "not reported" into null.
   // A comment on a removed line carries only the original_ anchor, which is
   // why both sides are reported rather than collapsed into one position.
   return {
-    id: comment.id,
-    api_url: `${base}/reviews/${context.review}/comments/${comment.id}`,
+    id,
+    api_url: `${base}/reviews/${context.review}/comments/${id}`,
     path: comment.path || null,
     position: comment.position || null,
     original_position: comment.original_position || null,
@@ -1683,7 +1669,7 @@ function normalizeReviewComment(
     // The hunk is free text like a body, so it observes the same ceiling.
     // Uncapped, a review carrying many large hunks would let the capped view
     // emit an unbounded payload while page_info still reported no truncation.
-    diff_hunk: previewText(comment.diff_hunk, context.full),
+    diff_hunk: previewBody(comment.diff_hunk, context.full).body,
     user: comment.user?.login ?? null,
     resolved_by: comment.resolver?.login ?? null,
     created_at: timestampOrNull(comment.created_at),
@@ -1693,18 +1679,11 @@ function normalizeReviewComment(
 }
 
 function normalizeMilestone(milestone: ApiMilestone): MilestoneIdentity {
-  if (
-    !Number.isSafeInteger(milestone.id) ||
-    !milestone.id ||
-    milestone.id < 1
-  ) {
-    throw new ForgejoAxiError(
-      'Forgejo milestone response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
   return {
-    id: milestone.id,
+    id: requireId(
+      milestone.id,
+      'Forgejo milestone response omitted a valid id',
+    ),
     name: milestone.title ?? '',
     state: milestone.state ?? 'unknown',
   };
@@ -1715,13 +1694,7 @@ function normalizeRun(
   repo: RepositoryRef,
   run: ApiActionRun,
 ): RunIdentity {
-  if (!Number.isSafeInteger(run.id) || !run.id || run.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo run response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
-  const id = run.id;
+  const id = requireId(run.id, 'Forgejo run response omitted a valid id');
   return {
     id,
     url: `${canonicalRepoUrl(config, repo)}/actions/runs/${id}`,
@@ -1744,14 +1717,8 @@ function timestampOrNull(raw: string | undefined): string | null {
 }
 
 function normalizeJob(job: ApiActionRunJob): JobIdentity {
-  if (!Number.isSafeInteger(job.id) || !job.id || job.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo job response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
   return {
-    id: job.id,
+    id: requireId(job.id, 'Forgejo job response omitted a valid id'),
     run_id: job.run_id ?? 0,
     name: job.name ?? '',
     status: job.status ?? 'unknown',
@@ -1772,13 +1739,7 @@ function requireSafeArtifactName(raw: string | undefined): string {
 }
 
 function requireArtifactId(id: number | undefined): number {
-  if (!Number.isSafeInteger(id) || !id || id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo artifact response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
-  return id;
+  return requireId(id, 'Forgejo artifact response omitted a valid id');
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
@@ -1799,11 +1760,6 @@ function previewBody(raw: string | undefined, full: boolean): BodyPreview {
   };
 }
 
-/** previewBody's ceiling for a field that carries no measurement of its own. */
-function previewText(raw: string | undefined, full: boolean): string {
-  return previewBody(raw, full).body;
-}
-
 function sameNames(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
   const sorted = [...right].sort();
@@ -1820,7 +1776,6 @@ interface NameLookup {
   code: 'LABEL' | 'MILESTONE';
   noun: string;
   hint: string;
-  ceilingHint: string;
 }
 
 function labelLookup(repo: RepositoryRef): NameLookup {
@@ -1828,7 +1783,6 @@ function labelLookup(repo: RepositoryRef): NameLookup {
     code: 'LABEL',
     noun: 'label',
     hint: `Run \`forgejo-axi label list --repo ${repo.fullName}\``,
-    ceilingHint: 'Reduce the repository label count and retry',
   };
 }
 
@@ -1837,7 +1791,6 @@ function milestoneLookup(repo: RepositoryRef): NameLookup {
     code: 'MILESTONE',
     noun: 'milestone',
     hint: `Run \`forgejo-axi api GET repos/${repo.fullName}/milestones\``,
-    ceilingHint: 'Reduce the repository milestone count and retry',
   };
 }
 
@@ -1886,7 +1839,7 @@ function namedSearchIncomplete(
     'PAGINATION_INCOMPLETE',
     {
       details: { pages: page.pages, fetched: page.items.length },
-      suggestions: [lookup.ceilingHint],
+      suggestions: [`Reduce the repository ${lookup.noun} count and retry`],
     },
   );
 }
@@ -2060,11 +2013,15 @@ interface ProbedCapabilities {
   run_artifacts?: boolean;
 }
 
+type CapabilityReport = Record<keyof ProbedCapabilities, boolean> & {
+  probe: { source: string; complete: boolean };
+};
+
 function capabilityObject(
   capabilities: ProbedCapabilities,
   source: string,
   complete: boolean,
-): Record<string, unknown> {
+): CapabilityReport {
   return {
     pull_requests: capabilities.pull_requests ?? false,
     commit_statuses: capabilities.commit_statuses ?? false,
