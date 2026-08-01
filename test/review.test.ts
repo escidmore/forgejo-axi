@@ -11,7 +11,6 @@ import {
 } from './server.js';
 
 interface ReviewWorld {
-  swagger: Record<string, unknown>;
   reviews: Array<Record<string, unknown>>;
   reviewComments: Array<Record<string, unknown>>;
   diff: string;
@@ -36,11 +35,13 @@ interface Review {
   id: number;
   api_url: string;
   user: string | null;
+  team: string | null;
   state: string | null;
   stale: boolean;
   official: boolean;
   dismissed: boolean;
   submitted_at: string | null;
+  updated_at: string | null;
   comments: ReviewComment[];
   body: string;
   body_length: number;
@@ -67,16 +68,15 @@ afterEach(async () => {
 });
 
 async function reviewServer(world: ReviewWorld): Promise<FakeServer> {
-  const state: ReviewWorld = { ...world };
+  // No swagger route: neither subcommand probes capabilities, so a host that
+  // answered one would be answering a request these commands never make.
   const server = await startServer((_request, response, recorded) => {
     const url = new URL(recorded.url, 'http://fake');
-    if (url.pathname === '/swagger.v1.json')
-      return json(response, 200, state.swagger);
     const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
     const page = Number(url.searchParams.get('page') ?? '1');
 
     if (path === '/pulls/42/reviews' && recorded.method === 'GET') {
-      return json(response, 200, page === 1 ? state.reviews : []);
+      return json(response, 200, page === 1 ? world.reviews : []);
     }
     const comments = /^\/pulls\/42\/reviews\/(\d+)\/comments$/.exec(path);
     if (comments?.[1] && recorded.method === 'GET') {
@@ -84,13 +84,13 @@ async function reviewServer(world: ReviewWorld): Promise<FakeServer> {
       return json(
         response,
         200,
-        review === COMMENTED_REVIEW ? state.reviewComments : [],
+        review === COMMENTED_REVIEW ? world.reviewComments : [],
       );
     }
     if (path === '/pulls/42.diff' && recorded.method === 'GET') {
       response.statusCode = 200;
       response.setHeader('content-type', 'text/plain');
-      response.end(state.diff);
+      response.end(world.diff);
       return;
     }
     return json(response, 404, { message: 'not found' });
@@ -250,6 +250,91 @@ describe('pr reviews', () => {
     expect(full.output).toContain('displayed: 31');
   });
 
+  it('honours --limit when displaying reviews', async () => {
+    const fixture = await load<ReviewWorld>(16);
+    const server = await reviewServer({ ...fixture, reviews: manyReviews(31) });
+    const limited = await invoke([
+      'pr',
+      'reviews',
+      ...connection(server, false),
+      '42',
+      '--limit',
+      '5',
+    ]);
+    expect(limited.exitCode).toBeUndefined();
+    expect(limited.output).toContain('fetched: 31');
+    expect(limited.output).toContain('displayed: 5');
+    expect(limited.output).toContain('truncated: true');
+  });
+
+  it('names the team when a review is requested from one', async () => {
+    const fixture = await load<ReviewWorld>(16);
+    const server = await reviewServer({
+      ...fixture,
+      reviews: [
+        {
+          id: 504,
+          state: 'REQUEST_REVIEW',
+          body: '',
+          comments_count: 0,
+          submitted_at: '0001-01-01T00:00:00Z',
+          updated_at: '2026-01-06T00:00:00Z',
+          team: { name: 'platform' },
+        },
+      ],
+    });
+    const output = parseJson<ReviewsOutput>(
+      (await invoke(['pr', 'reviews', ...connection(server), '42'])).output,
+    );
+    const review = output.reviews[0];
+    expect(review?.user).toBeNull();
+    expect(review?.team).toBe('platform');
+    expect(review?.submitted_at).toBeNull();
+    expect(review?.updated_at).toBe('2026-01-06T00:00:00Z');
+  });
+
+  it('caps a long diff hunk until --full', async () => {
+    const fixture = await load<ReviewWorld>(16);
+    const hunk = `@@ -1,1 +1,1 @@\n${'+ context line\n'.repeat(80)}`;
+    const server = await reviewServer({
+      ...fixture,
+      reviews: [
+        {
+          id: COMMENTED_REVIEW,
+          state: 'COMMENT',
+          body: 'See inline.',
+          comments_count: 1,
+          submitted_at: '2026-01-06T00:00:00Z',
+          user: { login: 'reviewer-two' },
+        },
+      ],
+      reviewComments: [
+        {
+          id: 999,
+          body: 'note',
+          path: 'src/big.ts',
+          position: 3,
+          commit_id: 'abc123',
+          diff_hunk: hunk,
+          user: { login: 'reviewer-two' },
+          created_at: '2026-01-06T00:00:00Z',
+          updated_at: '2026-01-06T00:00:00Z',
+        },
+      ],
+    });
+    expect(hunk.length).toBeGreaterThan(500);
+    const capped = parseJson<ReviewsOutput>(
+      (await invoke(['pr', 'reviews', ...connection(server), '42'])).output,
+    );
+    expect(capped.reviews[0]?.comments[0]?.diff_hunk).toHaveLength(500);
+
+    const full = parseJson<ReviewsOutput>(
+      (await invoke(['pr', 'reviews', ...connection(server), '42', '--full']))
+        .output,
+    );
+    expect(full.reviews[0]?.comments[0]?.diff_hunk).toBe(hunk);
+  });
+
   it('renders an empty review list per the contract', async () => {
     const fixture = await load<ReviewWorld>(15);
     const server = await reviewServer({ ...fixture, reviews: [] });
@@ -312,7 +397,8 @@ describe('pr diff', () => {
 
   it('caps the TOON diff at thirty lines and documents the path to the rest', async () => {
     const fixture = await load<ReviewWorld>(16);
-    const server = await reviewServer({ ...fixture, diff: longDiff(60) });
+    const sent = longDiff(60);
+    const server = await reviewServer({ ...fixture, diff: sent });
     const capped = await invoke([
       'pr',
       'diff',
@@ -337,7 +423,8 @@ describe('pr diff', () => {
     expect(full.output).toContain('displayed: 61');
     expect(full.output).toContain('truncated: false');
 
-    // --json is the other complete path to the whole diff.
+    // --json is the other complete path, and it returns the forge's bytes
+    // unchanged — trailing newline included — so a saved patch still applies.
     const asJson = parseJson<DiffOutput>(
       (await invoke(['pr', 'diff', ...connection(server), '42'])).output,
     );
@@ -346,7 +433,7 @@ describe('pr diff', () => {
       displayed: 61,
       truncated: false,
     });
-    expect(asJson.diff.split('\n')).toHaveLength(61);
+    expect(asJson.diff).toBe(sent);
     expect(asJson.next).toBeUndefined();
   });
 

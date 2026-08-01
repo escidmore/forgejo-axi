@@ -111,7 +111,9 @@ interface ApiPullReview {
   dismissed?: boolean;
   comments_count?: number;
   submitted_at?: string;
+  updated_at?: string;
   user?: ApiUser;
+  team?: { name?: string };
 }
 
 interface ApiPullReviewComment {
@@ -245,17 +247,23 @@ export interface ReviewCommentIdentity extends BodyPreview {
   updated_at: string | null;
 }
 
-/** One submitted review: who reviewed, the verdict, and the comments they left. */
+/**
+ * One review record: who was asked or reviewed, the verdict, and any comments
+ * left. Not every record is a submission — a review requested from a user or a
+ * team is reported here too, with a null submitted_at.
+ */
 export interface ReviewIdentity extends BodyPreview {
   id: number;
   api_url: string;
   user: string | null;
+  team: string | null;
   state: string | null;
   stale: boolean;
   official: boolean;
   dismissed: boolean;
   commit_id: string | null;
   submitted_at: string | null;
+  updated_at: string | null;
   comments: ReviewCommentIdentity[];
 }
 
@@ -694,7 +702,10 @@ export class ForgejoService {
     for (const review of page.items) {
       const id = requireReviewId(review);
       // A review that reports no inline comments needs no second request; an
-      // absent count is treated as unknown and fetched.
+      // absent count is treated as unknown and fetched. The remaining fetches
+      // are serial, so a pull request with many commented reviews costs one
+      // round trip each. Parallelising them would need a concurrency cap to
+      // stay polite to the forge, which no observed pull request has needed.
       const comments =
         review.comments_count === 0
           ? []
@@ -720,7 +731,7 @@ export class ForgejoService {
     });
     // An empty diff arrives as an empty body, which the client reports as null.
     // Anything else non-textual is a malformed response, not an empty diff.
-    if (response.data === null || response.data === undefined) return '';
+    if (response.data === null) return '';
     if (typeof response.data !== 'string') {
       throw new ForgejoAxiError(
         'Forgejo returned a non-text diff response',
@@ -1625,14 +1636,20 @@ function normalizeReview(
     id: context.id,
     api_url: `${base}/reviews/${context.id}`,
     user: review.user?.login ?? null,
+    // A review requested from a team names the team and leaves user unset, so
+    // reporting only user would leave that record with nobody on it.
+    team: review.team?.name ?? null,
     // Forgejo reports an unmapped verdict as an empty string rather than
-    // omitting it, so the absent case has to be matched on falsiness.
+    // omitting it, so the absent case has to be matched on falsiness. Any
+    // other value passes through: nulling a verdict this version does not
+    // recognise would conflate "no verdict" with "a verdict we cannot name".
     state: review.state || null,
     stale: review.stale ?? false,
     official: review.official ?? false,
     dismissed: review.dismissed ?? false,
     commit_id: review.commit_id || null,
     submitted_at: timestampOrNull(review.submitted_at),
+    updated_at: timestampOrNull(review.updated_at),
     comments: context.comments,
     ...previewBody(review.body, context.full),
   };
@@ -1663,7 +1680,10 @@ function normalizeReviewComment(
     original_position: comment.original_position || null,
     commit_id: comment.commit_id || null,
     original_commit_id: comment.original_commit_id || null,
-    diff_hunk: comment.diff_hunk ?? '',
+    // The hunk is free text like a body, so it observes the same ceiling.
+    // Uncapped, a review carrying many large hunks would let the capped view
+    // emit an unbounded payload while page_info still reported no truncation.
+    diff_hunk: previewText(comment.diff_hunk, context.full),
     user: comment.user?.login ?? null,
     resolved_by: comment.resolver?.login ?? null,
     created_at: timestampOrNull(comment.created_at),
@@ -1777,6 +1797,11 @@ function previewBody(raw: string | undefined, full: boolean): BodyPreview {
     body_length: characters.length,
     body_truncated: truncated,
   };
+}
+
+/** previewBody's ceiling for a field that carries no measurement of its own. */
+function previewText(raw: string | undefined, full: boolean): string {
+  return previewBody(raw, full).body;
 }
 
 function sameNames(left: readonly string[], right: readonly string[]): boolean {

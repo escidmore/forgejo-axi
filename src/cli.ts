@@ -562,7 +562,10 @@ function diffOutput(diff: string, showAll: boolean): Record<string, unknown> {
   const displayed = showAll ? lines : lines.slice(0, displayLimit(undefined));
   const hidden = lines.length - displayed.length;
   return {
-    diff: displayed.join('\n'),
+    // A complete diff is emitted exactly as the forge sent it, trailing
+    // newline included, so a saved patch still applies. An excerpt is an
+    // excerpt and carries no such promise.
+    diff: hidden === 0 ? diff : displayed.join('\n'),
     diff_info: {
       lines: lines.length,
       displayed: displayed.length,
