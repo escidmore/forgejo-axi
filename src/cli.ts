@@ -794,6 +794,9 @@ async function issueEdit(
   const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
   const repo = resolveRepo(parsed, env);
   const title = stringFlag(parsed, '--title');
+  // A title is the one field that cannot be cleared, so an empty one is a
+  // mistake rather than an instruction.
+  if (title === '') throw usageError('--title cannot be empty');
   const input: IssueInput = {
     ...issueInput(parsed),
     ...(title === undefined ? {} : { title }),
@@ -823,13 +826,12 @@ async function issueSetState(
   );
   const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
   const repo = resolveRepo(parsed, env);
+  const comment = stringFlag(parsed, '--comment');
+  // Forgejo rejects an empty comment body, so catch it as usage rather than
+  // letting an unset variable become a 422 mid-close.
+  if (comment === '') throw usageError('--comment cannot be empty');
   const service = await serviceFor(parsed, env);
-  return service.setIssueState(
-    repo,
-    number,
-    state,
-    stringFlag(parsed, '--comment'),
-  );
+  return service.setIssueState(repo, number, state, comment);
 }
 
 async function issueComment(
@@ -872,7 +874,10 @@ function issueInput(parsed: ParsedArgs): IssueInput {
 
 /** An empty value is an empty set, which is how these flags clear a field. */
 function commaList(raw: string): string[] {
-  return raw.trim() === '' ? [] : raw.split(',').map((value) => value.trim());
+  return raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '');
 }
 
 async function serviceFor(

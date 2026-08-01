@@ -1,7 +1,14 @@
-import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
-import { main } from '../src/cli.js';
-import { json, startServer, type FakeServer } from './server.js';
+import {
+  closeServers,
+  invoke,
+  json,
+  loadFixture as load,
+  parseJson,
+  servers,
+  startServer,
+  type FakeServer,
+} from './server.js';
 
 interface Fixture {
   labels: Array<Record<string, unknown>>;
@@ -18,38 +25,10 @@ interface IssueWorld {
   list?: Array<Record<string, unknown>>;
 }
 
-const servers: FakeServer[] = [];
-afterEach(async () => {
-  process.exitCode = undefined;
-  await Promise.all(servers.splice(0).map((server) => server.close()));
-});
+afterEach(closeServers);
 
 async function loadFixture(version: 15 | 16): Promise<Fixture> {
-  return parseJson<Fixture>(
-    await readFile(
-      new URL(`./fixtures/forgejo-${version}.json`, import.meta.url),
-      'utf8',
-    ),
-  );
-}
-
-async function invoke(
-  argv: string[],
-  env: NodeJS.ProcessEnv = {},
-): Promise<{ output: string; exitCode: number | undefined }> {
-  let output = '';
-  process.exitCode = undefined;
-  await main({
-    argv,
-    env,
-    stdout: {
-      write: (chunk) => {
-        output += String(chunk);
-        return true;
-      },
-    },
-  });
-  return { output, exitCode: process.exitCode };
+  return load<Fixture>(version);
 }
 
 async function worldFor(version: 15 | 16): Promise<IssueWorld> {
@@ -271,6 +250,56 @@ describe('issue command family', () => {
       milestones: '3',
       assigned_by: 'robot',
     });
+  });
+
+  it('ignores empty entries in a comma-separated value', async () => {
+    const server = await issueServer(await worldFor(16));
+    const result = await invoke([
+      'issue',
+      'list',
+      ...connection(server),
+      '--label',
+      'bug, ',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    const query = new URL(
+      server.requests.find((request) => request.url.includes('/issues?'))!.url,
+      'http://fake',
+    ).searchParams;
+    expect(query.get('labels')).toBe('bug');
+  });
+
+  it('refuses empty values that have no Forgejo state to reach', async () => {
+    const server = await issueServer(await worldFor(16));
+    const title = await invoke([
+      'issue',
+      'edit',
+      ...connection(server),
+      '7',
+      '--title',
+      '',
+    ]);
+    expect(title.exitCode).toBe(2);
+    expect(parseJson(title.output)).toMatchObject({
+      error: '--title cannot be empty',
+    });
+
+    const comment = await invoke([
+      'issue',
+      'close',
+      ...connection(server),
+      '7',
+      '--comment',
+      '',
+    ]);
+    expect(comment.exitCode).toBe(2);
+    expect(parseJson(comment.output)).toMatchObject({
+      error: '--comment cannot be empty',
+    });
+
+    expect(server.requests.some((request) => request.method !== 'GET')).toBe(
+      false,
+    );
   });
 
   it('refuses filter names Forgejo would silently discard', async () => {
@@ -676,11 +705,3 @@ describe('issue command family', () => {
     expect(failed.output).not.toContain('super-secret-token');
   });
 });
-
-function parseJson<T = unknown>(value: string): T {
-  try {
-    return JSON.parse(value) as T;
-  } catch (error) {
-    throw new Error(`Expected valid JSON: ${String(error)}`, { cause: error });
-  }
-}

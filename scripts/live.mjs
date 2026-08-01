@@ -150,8 +150,19 @@ const created = {
 try {
   // ---- seed ----------------------------------------------------------------
   for (const name of ['live-bug', 'live-triage']) {
-    cli(['label', 'create', '--repo', REPO, name, '--color', '#ededed']);
-    created.labels.push(name);
+    const outcome = cli([
+      'label',
+      'create',
+      '--repo',
+      REPO,
+      name,
+      '--color',
+      '#ededed',
+    ]);
+    // `label create` reconciles an existing label rather than duplicating it,
+    // so tracking the name unconditionally would make cleanup delete a label
+    // the repository already owned.
+    if (outcome.created === true) created.labels.push(name);
   }
   const ms = await raw('POST', `repos/${REPO}/milestones`, { title: 'v-live' });
   created.milestone = ms.data?.id ?? null;
@@ -433,7 +444,7 @@ try {
   );
 
   // ---- pull request lane ---------------------------------------------------
-  await raw('POST', `repos/${REPO}/contents/live-base.txt`, {
+  await raw('POST', `repos/${REPO}/contents/${BRANCH}-base.txt`, {
     content: Buffer.from('base\n').toString('base64'),
     message: 'live: seed base',
   });
@@ -659,7 +670,9 @@ try {
   if (created.milestone)
     await raw('DELETE', `repos/${REPO}/milestones/${created.milestone}`);
   await raw('DELETE', `repos/${REPO}/branches/${BRANCH}`);
-  for (const file of ['live-base.txt', `${BRANCH}.txt`]) {
+  // Both names carry the per-run branch suffix, so cleanup can never reach a
+  // file that predates this run.
+  for (const file of [`${BRANCH}-base.txt`, `${BRANCH}.txt`]) {
     const head = await raw('GET', `repos/${REPO}/contents/${file}`);
     if (head.data?.sha)
       await raw('DELETE', `repos/${REPO}/contents/${file}`, {

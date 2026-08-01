@@ -15,12 +15,9 @@ import {
 import { ForgejoAxiError } from '../src/errors.js';
 import { ForgejoHttpClient, requestHostname } from '../src/http.js';
 import { testSubprocessEnv } from './environment.js';
-import { json, startServer, type FakeServer } from './server.js';
+import { closeServers, json, servers, startServer } from './server.js';
 
-const servers: FakeServer[] = [];
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map((server) => server.close()));
-});
+afterEach(closeServers);
 
 describe('URL and authentication configuration', () => {
   it('preserves path prefixes and canonicalizes trailing slashes', () => {

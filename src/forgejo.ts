@@ -648,22 +648,16 @@ export class ForgejoService {
     return names.map((name) => requireNamed(page, name, lookup));
   }
 
-  async listMilestones(
-    repo: RepositoryRef,
-  ): Promise<Paginated<MilestoneIdentity>> {
-    const page = await this.http.paginate<ApiMilestone>(
-      `${repoPath(repo)}/milestones`,
-      { state: 'all' },
-    );
-    return { ...page, items: page.items.map(normalizeMilestone) };
-  }
-
   async resolveMilestone(
     repo: RepositoryRef,
     name: string,
   ): Promise<MilestoneIdentity> {
+    const page = await this.http.paginate<ApiMilestone>(
+      `${repoPath(repo)}/milestones`,
+      { state: 'all' },
+    );
     return requireNamed(
-      await this.listMilestones(repo),
+      { ...page, items: page.items.map(normalizeMilestone) },
       name,
       milestoneLookup(repo),
     );

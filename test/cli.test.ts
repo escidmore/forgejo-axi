@@ -1,7 +1,14 @@
-import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
-import { main } from '../src/cli.js';
-import { json, startServer, type FakeServer } from './server.js';
+import {
+  closeServers,
+  invoke,
+  json,
+  loadFixture as load,
+  parseJson,
+  servers,
+  startServer,
+  type FakeServer,
+} from './server.js';
 
 interface Fixture {
   version: Record<string, unknown>;
@@ -10,38 +17,10 @@ interface Fixture {
   pull: Record<string, unknown>;
 }
 
-const servers: FakeServer[] = [];
-afterEach(async () => {
-  process.exitCode = undefined;
-  await Promise.all(servers.splice(0).map((server) => server.close()));
-});
+afterEach(closeServers);
 
 async function loadFixture(version: 15 | 16): Promise<Fixture> {
-  return parseJson<Fixture>(
-    await readFile(
-      new URL(`./fixtures/forgejo-${version}.json`, import.meta.url),
-      'utf8',
-    ),
-  );
-}
-
-async function invoke(
-  argv: string[],
-  env: NodeJS.ProcessEnv = {},
-): Promise<{ output: string; exitCode: number | undefined }> {
-  let output = '';
-  process.exitCode = undefined;
-  await main({
-    argv,
-    env,
-    stdout: {
-      write: (chunk) => {
-        output += String(chunk);
-        return true;
-      },
-    },
-  });
-  return { output, exitCode: process.exitCode };
+  return load<Fixture>(version);
 }
 
 describe('CLI contract', () => {
@@ -975,11 +954,3 @@ describe('label command family', () => {
     expect(failed.output).not.toContain('super-secret-token');
   });
 });
-
-function parseJson<T = unknown>(value: string): T {
-  try {
-    return JSON.parse(value) as T;
-  } catch (error) {
-    throw new Error(`Expected valid JSON: ${String(error)}`, { cause: error });
-  }
-}
