@@ -1,0 +1,54 @@
+---
+name: Release
+
+'on':
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Publishing is not safe to interrupt or run twice against the registry.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Signs the published tarball against this workflow run.
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      # A release cut from a tag that disagrees with package.json would publish
+      # a version nobody asked for. Fail before the registry sees it.
+      - name: Release tag matches the package version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          VERSION="v$(node -p 'require("./package.json").version')"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "release tag $TAG disagrees with package.json $VERSION" >&2
+            exit 1
+          fi
+      # prepublishOnly runs npm run check, which builds dist/ before packing.
+      #
+      # NPM_TOKEN is temporary. npm cannot register a trusted publisher for a
+      # package that does not exist yet, so the first release has to authenticate
+      # with a token. Once forgejo-axi exists on the registry, configure the
+      # trusted publisher on npmjs.com, delete the secret, and remove this env
+      # block: OIDC then authenticates the publish with no long-lived credential.
+      - run: npm publish --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
