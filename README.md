@@ -55,6 +55,20 @@ forgejo-axi label delete --repo owner/repo wontfix
 
 Labels are addressed by name; the numeric id is resolved for you. An unknown name is `LABEL_NOT_FOUND` and a duplicated name is `LABEL_AMBIGUOUS`, both usage errors that point at `label list`. `label create` reconciles an existing label of that name instead of duplicating it, and `label edit --name` renames in place so the label keeps its issue assignments.
 
+## Issue loop
+
+```bash
+forgejo-axi issue list --repo owner/repo --label bug --state open
+forgejo-axi issue view --repo owner/repo 7 --full
+forgejo-axi issue create --repo owner/repo --title 'Race in scheduler' --label bug --milestone v1.0
+forgejo-axi issue edit --repo owner/repo 7 --label bug,triage --assignee robot
+forgejo-axi issue comment --repo owner/repo 7 --body 'Reproduced on 15.0.5'
+forgejo-axi issue close --repo owner/repo 7 --comment 'Fixed in #42'
+forgejo-axi issue reopen --repo owner/repo 7
+```
+
+Labels, assignees, and milestones are addressed by name and resolved before anything is mutated, so an unknown name is a usage error rather than a half-applied edit or a filter Forgejo silently drops. `issue list` returns issues only; `pr list` covers pull requests. `issue edit` sends only the fields that differ and reports `updated=false` when there is nothing to change. `issue close --comment` posts the comment before the state change. `issue comment` also accepts a pull request number, because Forgejo serves pull request discussion through the same endpoint.
+
 ## Raw API and capabilities
 
 ```console

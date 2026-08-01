@@ -15,8 +15,11 @@ import {
   ForgejoService,
   normalizeLabelColor,
   pageInfo,
+  parseIssueNumber,
   parsePullNumber,
   parseRepository,
+  type IssueIdentity,
+  type IssueInput,
   type LabelInput,
   type PullRequestIdentity,
   type RepositoryRef,
@@ -47,6 +50,7 @@ Usage:
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
   forgejo-axi pr <find|list|view|create|update|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
+  forgejo-axi issue <list|view|create|edit|close|reopen|comment> ...
 
 Connection flags:
   --base-url URL     Forgejo root URL; defaults to FORGEJO_BASE_URL
@@ -58,6 +62,7 @@ Connection flags:
 Examples:
   forgejo-axi status --base-url https://forgejo.example
   forgejo-axi pr checks --repo owner/repo 42
+  forgejo-axi issue list --repo owner/repo --label bug
   forgejo-axi api GET repos/owner/repo
 `;
 
@@ -90,9 +95,27 @@ Labels are addressed by name; the numeric id is resolved for you.
 Run \`forgejo-axi label <command> --help\` for flags and examples.
 `;
 
+const ISSUE_HELP = `forgejo-axi issue — issue lifecycle commands
+
+Commands:
+  list     List issues, optionally filtered
+  view     View an issue with its body and comment thread
+  create   File a new issue
+  edit     Edit title, body, labels, assignees, or milestone
+  close    Close an issue, optionally with a final comment
+  reopen   Reopen a closed issue
+  comment  Post a comment on an issue or pull request
+
+Labels and milestones are addressed by name; ids are resolved for you.
+\`list\` returns issues only; use \`pr list\` for pull requests.
+
+Run \`forgejo-axi issue <command> --help\` for flags and examples.
+`;
+
 const FAMILY_HELP: Record<string, string> = {
   pr: PR_HELP,
   label: LABEL_HELP,
+  issue: ISSUE_HELP,
 };
 
 const HELP: Record<string, string> = {
@@ -112,6 +135,13 @@ const HELP: Record<string, string> = {
   'label create': `forgejo-axi label create — idempotently create or reconcile a label\n\nUsage:\n  forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT] [connection flags]\n\nFlags:\n  --color HEX          Six-digit hex color; defaults to #ededed on creation\n  --description TEXT   Label description\n\nExample:\n  forgejo-axi label create --repo owner/repo bug --color '#d73a4a' --description 'Something is broken'\n`,
   'label edit': `forgejo-axi label edit — edit a label addressed by name\n\nUsage:\n  forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--description TEXT] [connection flags]\n\nFlags:\n  --name NEW           Rename the label, preserving its issue assignments\n  --color HEX          Six-digit hex color\n  --description TEXT   Label description\n\nExample:\n  forgejo-axi label edit --repo owner/repo bug --color '#b60205'\n`,
   'label delete': `forgejo-axi label delete — delete a label addressed by name\n\nUsage:\n  forgejo-axi label delete --repo OWNER/REPO NAME [connection flags]\n\nExample:\n  forgejo-axi label delete --repo owner/repo wontfix\n`,
+  'issue list': `forgejo-axi issue list — list issues, excluding pull requests\n\nUsage:\n  forgejo-axi issue list --repo OWNER/REPO [--state open|closed|all] [--label NAMES] [--assignee USER] [--milestone NAME] [--limit N|--full] [--fields LIST|all] [connection flags]\n\nFlags:\n  --label NAMES      Comma-separated label names; every name must exist\n  --assignee USER    Only issues assigned to this user\n  --milestone NAME   Only issues in this milestone\n  --fields LIST      Comma-separated identity fields; defaults to number,title,state,labels\n\nExamples:\n  forgejo-axi issue list --repo owner/repo --label bug,triage\n  forgejo-axi issue list --repo owner/repo --state all --full --fields all\n`,
+  'issue view': `forgejo-axi issue view — show an issue with its comment thread\n\nUsage:\n  forgejo-axi issue view --repo OWNER/REPO NUMBER [--full] [connection flags]\n\nFlags:\n  --full  Display complete bodies and every comment instead of previews\n\nExample:\n  forgejo-axi issue view --repo owner/repo 7 --full\n`,
+  'issue create': `forgejo-axi issue create — file a new issue\n\nUsage:\n  forgejo-axi issue create --repo OWNER/REPO --title TITLE [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME] [connection flags]\n\nFlags:\n  --label NAMES      Comma-separated label names\n  --assignee USERS   Comma-separated usernames\n  --milestone NAME   Milestone name\n\nExample:\n  forgejo-axi issue create --repo owner/repo --title 'Race in scheduler' --label bug\n`,
+  'issue edit': `forgejo-axi issue edit — edit an issue in place\n\nUsage:\n  forgejo-axi issue edit --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME] [connection flags]\n\nFlags:\n  --label NAMES      Replace the label set; empty string clears it\n  --assignee USERS   Replace the assignee set; empty string clears it\n  --milestone NAME   Set the milestone; empty string clears it\n\nExample:\n  forgejo-axi issue edit --repo owner/repo 7 --label bug,triage\n`,
+  'issue close': `forgejo-axi issue close — close an issue\n\nUsage:\n  forgejo-axi issue close --repo OWNER/REPO NUMBER [--comment TEXT] [connection flags]\n\nFlags:\n  --comment TEXT  Post this comment before closing\n\nExample:\n  forgejo-axi issue close --repo owner/repo 7 --comment 'Fixed in #42'\n`,
+  'issue reopen': `forgejo-axi issue reopen — reopen a closed issue\n\nUsage:\n  forgejo-axi issue reopen --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi issue reopen --repo owner/repo 7\n`,
+  'issue comment': `forgejo-axi issue comment — post a comment\n\nUsage:\n  forgejo-axi issue comment --repo OWNER/REPO NUMBER --body TEXT [connection flags]\n\nNUMBER may be a pull request; Forgejo serves pull request discussion through\nthe same issue comment endpoint.\n\nExample:\n  forgejo-axi issue comment --repo owner/repo 7 --body 'Reproduced on 15.0.5'\n`,
 };
 
 export async function main(options: MainOptions = {}): Promise<void> {
@@ -193,6 +223,7 @@ async function dispatch(
   if (command === 'api') return runApi(rest, env);
   if (command === 'pr') return runPull(rest, env);
   if (command === 'label') return runLabel(rest, env);
+  if (command === 'issue') return runIssue(rest, env);
   throw usageError(`Unknown command: ${command}`, ['Run `forgejo-axi --help`']);
 }
 
@@ -327,7 +358,7 @@ async function pullFind(
   const repo = resolveRepo(parsed, env);
   const head = requireFlag(parsed, '--head');
   const base = stringFlag(parsed, '--base');
-  const state = pullState(stringFlag(parsed, '--state') ?? 'open', true);
+  const state = stateFlag(stringFlag(parsed, '--state') ?? 'open', true);
   const service = await serviceFor(parsed, env);
   const result = await service.findPull(repo, head, base, state);
   return {
@@ -358,14 +389,18 @@ async function pullList(
   const requestedLimit = stringFlag(parsed, '--limit');
   rejectDisplayFlagConflicts(full, requestedLimit, json);
   const repo = resolveRepo(parsed, env);
-  const state = pullState(stringFlag(parsed, '--state') ?? 'open', true);
+  const state = stateFlag(stringFlag(parsed, '--state') ?? 'open', true);
   const service = await serviceFor(parsed, env);
   const page = await service.listPulls(repo, state);
   const limit = displayLimit(requestedLimit);
   const showAll = full || json;
-  const fields = pullListFields(stringFlag(parsed, '--fields'));
+  const fields = chooseFields<PullRequestIdentity>(
+    stringFlag(parsed, '--fields'),
+    PULL_IDENTITY_FIELDS,
+    DEFAULT_PULL_LIST_FIELDS,
+  );
   const displayed = (showAll ? page.items : page.items.slice(0, limit)).map(
-    (pull) => selectPullFields(pull, fields),
+    (pull) => selectFields(pull, fields),
   );
   return listOutput('pull_requests', displayed, page, showAll);
 }
@@ -456,7 +491,7 @@ async function pullUpdate(
   );
   const repo = resolveRepo(parsed, env);
   const state = stringFlag(parsed, '--state');
-  if (state !== undefined) pullState(state, false);
+  if (state !== undefined) stateFlag(state, false);
   const service = await serviceFor(parsed, env);
   const title = stringFlag(parsed, '--title');
   const body = stringFlag(parsed, '--body');
@@ -625,6 +660,220 @@ function labelInput(parsed: ParsedArgs): LabelInput {
   };
 }
 
+async function runIssue(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === '--help') return helpResult('issue');
+  const key = `issue ${subcommand}`;
+  if (!Object.hasOwn(HELP, key)) {
+    throw usageError(`Unknown issue command: ${subcommand}`, [
+      'Run `forgejo-axi issue --help`',
+    ]);
+  }
+  const rest = args.slice(1);
+  if (rest.includes('--help')) return helpResult(key);
+  switch (subcommand) {
+    case 'list':
+      return issueList(rest, env);
+    case 'view':
+      return issueView(rest, env);
+    case 'create':
+      return issueCreate(rest, env);
+    case 'edit':
+      return issueEdit(rest, env);
+    case 'close':
+      return issueSetState(rest, env, 'closed');
+    case 'reopen':
+      return issueSetState(rest, env, 'open');
+    case 'comment':
+      return issueComment(rest, env);
+    default:
+      throw usageError(`Unknown issue command: ${subcommand}`);
+  }
+}
+
+async function issueList(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--state': 'value',
+      '--label': 'value',
+      '--assignee': 'value',
+      '--milestone': 'value',
+      '--limit': 'value',
+      '--full': 'boolean',
+      '--fields': 'value',
+    }),
+    'issue list',
+  );
+  rejectPositionals(parsed);
+  const full = boolFlag(parsed, '--full');
+  const json = boolFlag(parsed, '--json');
+  const requestedLimit = stringFlag(parsed, '--limit');
+  rejectDisplayFlagConflicts(full, requestedLimit, json);
+  const repo = resolveRepo(parsed, env);
+  const label = stringFlag(parsed, '--label');
+  const assignee = stringFlag(parsed, '--assignee');
+  const milestone = stringFlag(parsed, '--milestone');
+  const service = await serviceFor(parsed, env);
+  const page = await service.listIssues(repo, {
+    state: stateFlag(stringFlag(parsed, '--state') ?? 'open', true),
+    ...(label === undefined ? {} : { labels: commaList(label) }),
+    ...(assignee === undefined ? {} : { assignee }),
+    ...(milestone === undefined ? {} : { milestone }),
+  });
+  const showAll = full || json;
+  const fields = chooseFields<IssueIdentity>(
+    stringFlag(parsed, '--fields'),
+    ISSUE_IDENTITY_FIELDS,
+    DEFAULT_ISSUE_LIST_FIELDS,
+  );
+  const displayed = (
+    showAll ? page.items : page.items.slice(0, displayLimit(requestedLimit))
+  ).map((issue) => selectFields(issue, fields));
+  return listOutput('issues', displayed, page, showAll);
+}
+
+async function issueView(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({ '--repo': 'value', '--full': 'boolean' }),
+    'issue view',
+  );
+  const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
+  const repo = resolveRepo(parsed, env);
+  const full = boolFlag(parsed, '--full');
+  const service = await serviceFor(parsed, env);
+  const { issue, comments } = await service.viewIssue(repo, number, full);
+  const showAll = full || boolFlag(parsed, '--json');
+  const displayed = showAll
+    ? comments
+    : comments.slice(0, displayLimit(undefined));
+  const hidden = comments.length - displayed.length;
+  return {
+    issue,
+    comments: displayed,
+    comment_info: {
+      fetched: comments.length,
+      displayed: displayed.length,
+      truncated: hidden > 0,
+    },
+    ...(hidden > 0
+      ? { next: ['Rerun with --full to display every comment'] }
+      : {}),
+  };
+}
+
+async function issueCreate(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(args, withFlags(ISSUE_FIELD_FLAGS), 'issue create');
+  rejectPositionals(parsed);
+  const repo = resolveRepo(parsed, env);
+  const title = requireFlag(parsed, '--title');
+  const service = await serviceFor(parsed, env);
+  return service.createIssue(repo, { ...issueInput(parsed), title });
+}
+
+async function issueEdit(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(args, withFlags(ISSUE_FIELD_FLAGS), 'issue edit');
+  const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
+  const repo = resolveRepo(parsed, env);
+  const title = stringFlag(parsed, '--title');
+  const input: IssueInput = {
+    ...issueInput(parsed),
+    ...(title === undefined ? {} : { title }),
+  };
+  if (Object.keys(input).length === 0) {
+    throw usageError('issue edit requires at least one field to change', [
+      'Run `forgejo-axi issue edit --help`',
+    ]);
+  }
+  const service = await serviceFor(parsed, env);
+  return service.editIssue(repo, number, input);
+}
+
+async function issueSetState(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  state: 'open' | 'closed',
+): Promise<Record<string, unknown>> {
+  const closing = state === 'closed';
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      ...(closing ? { '--comment': 'value' as const } : {}),
+    }),
+    closing ? 'issue close' : 'issue reopen',
+  );
+  const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  return service.setIssueState(
+    repo,
+    number,
+    state,
+    stringFlag(parsed, '--comment'),
+  );
+}
+
+async function issueComment(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({ '--repo': 'value', '--body': 'value' }),
+    'issue comment',
+  );
+  const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
+  const repo = resolveRepo(parsed, env);
+  const body = requireFlag(parsed, '--body');
+  const service = await serviceFor(parsed, env);
+  return service.commentIssue(repo, number, body);
+}
+
+const ISSUE_FIELD_FLAGS: FlagSpec = {
+  '--repo': 'value',
+  '--title': 'value',
+  '--body': 'value',
+  '--label': 'value',
+  '--assignee': 'value',
+  '--milestone': 'value',
+};
+
+function issueInput(parsed: ParsedArgs): IssueInput {
+  const body = stringFlag(parsed, '--body');
+  const label = stringFlag(parsed, '--label');
+  const assignee = stringFlag(parsed, '--assignee');
+  const milestone = stringFlag(parsed, '--milestone');
+  return {
+    ...(body === undefined ? {} : { body }),
+    ...(label === undefined ? {} : { labels: commaList(label) }),
+    ...(assignee === undefined ? {} : { assignees: commaList(assignee) }),
+    ...(milestone === undefined ? {} : { milestone }),
+  };
+}
+
+/** An empty value is an empty set, which is how these flags clear a field. */
+function commaList(raw: string): string[] {
+  return raw.trim() === '' ? [] : raw.split(',').map((value) => value.trim());
+}
+
 async function serviceFor(
   parsed: ParsedArgs,
   env: NodeJS.ProcessEnv,
@@ -655,7 +904,7 @@ function withFlags(flags: FlagSpec): FlagSpec {
   return { ...CONNECTION_FLAGS, ...flags };
 }
 
-function pullState(value: string, allowAll: boolean): string {
+function stateFlag(value: string, allowAll: boolean): string {
   const allowed = allowAll ? ['open', 'closed', 'all'] : ['open', 'closed'];
   if (!allowed.includes(value))
     throw usageError(`--state must be ${allowed.join(' or ')}`);
@@ -692,6 +941,28 @@ const DEFAULT_PULL_LIST_FIELDS: ReadonlyArray<keyof PullRequestIdentity> = [
   'state',
   'head',
 ];
+const ISSUE_IDENTITY_FIELDS: ReadonlyArray<keyof IssueIdentity> = [
+  'number',
+  'url',
+  'api_url',
+  'state',
+  'title',
+  'labels',
+  'assignees',
+  'milestone',
+  'comments',
+  'is_pull_request',
+  'user',
+  'created_at',
+  'updated_at',
+  'closed_at',
+];
+const DEFAULT_ISSUE_LIST_FIELDS: ReadonlyArray<keyof IssueIdentity> = [
+  'number',
+  'title',
+  'state',
+  'labels',
+];
 
 function rejectDisplayFlagConflicts(
   full: boolean,
@@ -712,31 +983,33 @@ function displayLimit(requestedLimit: string | undefined): number {
     : positiveInteger(requestedLimit, '--limit');
 }
 
-function pullListFields(
+function chooseFields<T extends object>(
   raw: string | undefined,
-): ReadonlyArray<keyof PullRequestIdentity> {
-  if (raw === undefined) return DEFAULT_PULL_LIST_FIELDS;
-  if (raw === 'all') return PULL_IDENTITY_FIELDS;
+  all: ReadonlyArray<keyof T & string>,
+  defaults: ReadonlyArray<keyof T & string>,
+): ReadonlyArray<keyof T & string> {
+  if (raw === undefined) return defaults;
+  if (raw === 'all') return all;
   const fields = raw.split(',');
   if (
     fields.some(
       (field, index) =>
-        !PULL_IDENTITY_FIELDS.includes(field as keyof PullRequestIdentity) ||
+        !all.includes(field as keyof T & string) ||
         fields.indexOf(field) !== index,
     )
   ) {
     throw usageError(`Invalid or duplicate --fields value: ${raw}`, [
-      `Valid fields: ${PULL_IDENTITY_FIELDS.join(',')},all`,
+      `Valid fields: ${all.join(',')},all`,
     ]);
   }
-  return fields as Array<keyof PullRequestIdentity>;
+  return fields as Array<keyof T & string>;
 }
 
-function selectPullFields(
-  pull: PullRequestIdentity,
-  fields: ReadonlyArray<keyof PullRequestIdentity>,
+function selectFields<T extends object>(
+  row: T,
+  fields: ReadonlyArray<keyof T & string>,
 ): Record<string, unknown> {
-  return Object.fromEntries(fields.map((field) => [field, pull[field]]));
+  return Object.fromEntries(fields.map((field) => [field, row[field]]));
 }
 
 function listOutput<T>(

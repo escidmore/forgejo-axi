@@ -24,6 +24,40 @@
     { "id": 8, "name": "enhancement", "color": "a2eeef", "description": "" },
     { "id": 9, "name": "wontfix", "color": "ffffff", "description": "Declined" }
   ],
+  "milestones": [
+    { "id": 3, "title": "v1.0", "state": "open" },
+    { "id": 4, "title": "v2.0", "state": "open" }
+  ],
+  "issue": {
+    "number": 7,
+    "state": "open",
+    "title": "Race in scheduler",
+    "body": "Steps to reproduce",
+    "labels": [
+      {
+        "id": 7,
+        "name": "bug",
+        "color": "d73a4a",
+        "description": "Something is broken"
+      }
+    ],
+    "assignees": [{ "login": "robot" }],
+    "milestone": { "id": 3, "title": "v1.0", "state": "open" },
+    "comments": 1,
+    "user": { "login": "reporter" },
+    "created_at": "2026-01-01T00:00:00Z",
+    "updated_at": "2026-01-02T00:00:00Z",
+    "closed_at": null
+  },
+  "comments": [
+    {
+      "id": 101,
+      "body": "Reproduced on this host",
+      "user": { "login": "robot" },
+      "created_at": "2026-01-02T00:00:00Z",
+      "updated_at": "2026-01-02T00:00:00Z"
+    }
+  ],
   "pull": {
     "number": 42,
     "state": "open",

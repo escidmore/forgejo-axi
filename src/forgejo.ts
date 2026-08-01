@@ -67,6 +67,36 @@ interface ApiLabel {
   is_archived?: boolean;
 }
 
+interface ApiMilestone {
+  id?: number;
+  title?: string;
+  state?: string;
+}
+
+interface ApiIssue {
+  number?: number;
+  state?: string;
+  title?: string;
+  body?: string;
+  labels?: ApiLabel[];
+  assignees?: ApiUser[];
+  milestone?: ApiMilestone | null;
+  comments?: number;
+  user?: ApiUser;
+  pull_request?: unknown;
+  created_at?: string;
+  updated_at?: string;
+  closed_at?: string;
+}
+
+interface ApiComment {
+  id?: number;
+  body?: string;
+  user?: ApiUser;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export interface RepositoryRef {
   owner: string;
   name: string;
@@ -102,6 +132,60 @@ export interface LabelIdentity {
 export interface LabelInput {
   color?: string;
   description?: string;
+}
+
+export interface MilestoneIdentity {
+  id: number;
+  name: string;
+  state: string;
+}
+
+export interface IssueIdentity {
+  number: number;
+  url: string;
+  api_url: string;
+  state: string;
+  title: string;
+  labels: string[];
+  assignees: string[];
+  milestone: string | null;
+  comments: number;
+  is_pull_request: boolean;
+  user: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  closed_at: string | null;
+}
+
+/** A body rendered as a preview or in full, with the measurement that says which. */
+interface BodyPreview {
+  body: string;
+  body_length: number;
+  body_truncated: boolean;
+}
+
+export interface CommentIdentity extends BodyPreview {
+  id: number;
+  api_url: string;
+  user: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface IssueFilters {
+  state: string;
+  labels?: string[];
+  assignee?: string;
+  milestone?: string;
+}
+
+export interface IssueInput {
+  title?: string;
+  body?: string;
+  labels?: string[];
+  assignees?: string[];
+  milestone?: string;
+  state?: string;
 }
 
 type CheckState = 'none' | 'pending' | 'failure' | 'success';
@@ -284,17 +368,9 @@ export class ForgejoService {
     full: boolean,
   ): Promise<Record<string, unknown>> {
     const response = await this.getPullRaw(repo, number);
-    const body = response.body ?? '';
-    const bodyCharacters = [...body];
-    const previewLimit = 500;
-    const truncated = !full && bodyCharacters.length > previewLimit;
     return {
       ...normalizePull(this.config, repo, response),
-      body: truncated
-        ? `${bodyCharacters.slice(0, previewLimit - 3).join('')}...`
-        : body,
-      body_length: bodyCharacters.length,
-      body_truncated: truncated,
+      ...previewBody(response.body, full),
     };
   }
 
@@ -491,7 +567,7 @@ export class ForgejoService {
     repo: RepositoryRef,
     name: string,
   ): Promise<LabelIdentity> {
-    return requireLabel(await this.listLabels(repo), repo, name);
+    return requireNamed(await this.listLabels(repo), name, labelLookup(repo));
   }
 
   async createLabel(
@@ -500,8 +576,8 @@ export class ForgejoService {
     input: LabelInput,
   ): Promise<Record<string, unknown>> {
     const page = await this.listLabels(repo);
-    const existing = matchLabel(page, repo, name);
-    if (!page.complete) throw labelSearchIncomplete(page);
+    const existing = matchNamed(page, name, labelLookup(repo));
+    if (!page.complete) throw namedSearchIncomplete(page, labelLookup(repo));
     if (existing) {
       return {
         created: false,
@@ -530,7 +606,7 @@ export class ForgejoService {
     input: LabelInput & { name?: string },
   ): Promise<Record<string, unknown>> {
     const page = await this.listLabels(repo);
-    const label = requireLabel(page, repo, name);
+    const label = requireNamed(page, name, labelLookup(repo));
     if (
       input.name !== undefined &&
       input.name !== label.name &&
@@ -541,7 +617,7 @@ export class ForgejoService {
         'LABEL_EXISTS',
         {
           details: { name: input.name },
-          suggestions: [labelListHint(repo)],
+          suggestions: [labelLookup(repo).hint],
           usage: true,
         },
       );
@@ -559,6 +635,245 @@ export class ForgejoService {
       path: `${repoPath(repo)}/labels/${label.id}`,
     });
     return { deleted: true, label };
+  }
+
+  /** Resolve every requested label name in one label fetch. */
+  async resolveLabels(
+    repo: RepositoryRef,
+    names: readonly string[],
+  ): Promise<LabelIdentity[]> {
+    if (names.length === 0) return [];
+    const page = await this.listLabels(repo);
+    const lookup = labelLookup(repo);
+    return names.map((name) => requireNamed(page, name, lookup));
+  }
+
+  async listMilestones(
+    repo: RepositoryRef,
+  ): Promise<Paginated<MilestoneIdentity>> {
+    const page = await this.http.paginate<ApiMilestone>(
+      `${repoPath(repo)}/milestones`,
+      { state: 'all' },
+    );
+    return { ...page, items: page.items.map(normalizeMilestone) };
+  }
+
+  async resolveMilestone(
+    repo: RepositoryRef,
+    name: string,
+  ): Promise<MilestoneIdentity> {
+    return requireNamed(
+      await this.listMilestones(repo),
+      name,
+      milestoneLookup(repo),
+    );
+  }
+
+  async listIssues(
+    repo: RepositoryRef,
+    filters: IssueFilters,
+  ): Promise<Paginated<IssueIdentity>> {
+    // `type` keeps pull requests out of a list an agent asked issues for.
+    const query: Record<string, string> = {
+      state: filters.state,
+      type: 'issues',
+    };
+    if (filters.labels && filters.labels.length > 0) {
+      // Forgejo silently discards unknown filter names, so resolution is what
+      // stops an unfiltered result from reading like a filtered one.
+      const labels = await this.resolveLabels(repo, filters.labels);
+      query['labels'] = labels.map((label) => label.name).join(',');
+    }
+    if (filters.milestone !== undefined) {
+      const milestone = await this.resolveMilestone(repo, filters.milestone);
+      query['milestones'] = String(milestone.id);
+    }
+    if (filters.assignee !== undefined) query['assigned_by'] = filters.assignee;
+    const page = await this.http.paginate<ApiIssue>(
+      `${repoPath(repo)}/issues`,
+      query,
+    );
+    return {
+      ...page,
+      items: page.items.map((item) => normalizeIssue(this.config, repo, item)),
+    };
+  }
+
+  async viewIssue(
+    repo: RepositoryRef,
+    number: number,
+    full: boolean,
+  ): Promise<{ issue: Record<string, unknown>; comments: CommentIdentity[] }> {
+    const raw = await this.getIssueRaw(repo, number);
+    // Forgejo serves the whole thread in one response and ignores page/limit
+    // here, so paginating it would refetch the same rows.
+    const response = await this.http.api<ApiComment[]>({
+      path: `${repoPath(repo)}/issues/${number}/comments`,
+    });
+    if (!Array.isArray(response.data)) {
+      throw new ForgejoAxiError(
+        'Forgejo returned a non-array comment response',
+        'INVALID_RESPONSE',
+      );
+    }
+    return {
+      issue: {
+        ...normalizeIssue(this.config, repo, raw),
+        ...previewBody(raw.body, full),
+      },
+      comments: response.data.map((comment) =>
+        normalizeComment(this.config, repo, comment, full),
+      ),
+    };
+  }
+
+  async createIssue(
+    repo: RepositoryRef,
+    input: IssueInput & { title: string },
+  ): Promise<Record<string, unknown>> {
+    const labels = await this.resolveLabels(repo, input.labels ?? []);
+    const milestone = await this.resolveOptionalMilestone(
+      repo,
+      input.milestone,
+    );
+    const response = await this.http.api<ApiIssue>({
+      method: 'POST',
+      path: `${repoPath(repo)}/issues`,
+      body: {
+        title: input.title,
+        ...(input.body === undefined ? {} : { body: input.body }),
+        ...(labels.length === 0
+          ? {}
+          : { labels: labels.map((label) => label.id) }),
+        ...(input.assignees === undefined
+          ? {}
+          : { assignees: input.assignees }),
+        ...(milestone === null ? {} : { milestone: milestone.id }),
+      },
+    });
+    return { issue: normalizeIssue(this.config, repo, response.data) };
+  }
+
+  async editIssue(
+    repo: RepositoryRef,
+    number: number,
+    input: IssueInput,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this.getIssueRaw(repo, number);
+    const current = normalizeIssue(this.config, repo, raw);
+    // Every name resolves before the first mutation so an unknown label or
+    // milestone cannot leave the issue half-edited.
+    const labels =
+      input.labels === undefined
+        ? undefined
+        : await this.resolveLabels(repo, input.labels);
+    const patch: Record<string, unknown> = {};
+    if (input.title !== undefined && input.title !== current.title)
+      patch['title'] = input.title;
+    if (input.body !== undefined && input.body !== (raw.body ?? ''))
+      patch['body'] = input.body;
+    if (input.state !== undefined && input.state !== current.state)
+      patch['state'] = input.state;
+    if (
+      input.assignees !== undefined &&
+      !sameNames(input.assignees, current.assignees)
+    ) {
+      patch['assignees'] = input.assignees;
+    }
+    if (input.milestone !== undefined) {
+      const milestone = await this.resolveOptionalMilestone(
+        repo,
+        input.milestone,
+      );
+      const desired = milestone === null ? null : milestone.name;
+      // Forgejo clears the milestone from id 0, not from an absent field.
+      if (desired !== current.milestone)
+        patch['milestone'] = milestone === null ? 0 : milestone.id;
+    }
+    const relabel =
+      labels !== undefined &&
+      !sameNames(
+        labels.map((label) => label.name),
+        current.labels,
+      );
+    if (Object.keys(patch).length > 0) {
+      await this.http.api({
+        method: 'PATCH',
+        path: `${repoPath(repo)}/issues/${number}`,
+        body: patch,
+      });
+    }
+    if (relabel) {
+      // Issue labels are not part of the issue patch body in Forgejo.
+      await this.http.api({
+        method: 'PUT',
+        path: `${repoPath(repo)}/issues/${number}/labels`,
+        body: { labels: labels.map((label) => label.id) },
+      });
+    }
+    const updated = Object.keys(patch).length > 0 || relabel;
+    return {
+      updated,
+      issue: updated ? await this.getIssue(repo, number) : current,
+    };
+  }
+
+  async setIssueState(
+    repo: RepositoryRef,
+    number: number,
+    state: 'open' | 'closed',
+    comment: string | undefined,
+  ): Promise<Record<string, unknown>> {
+    const posted =
+      comment === undefined
+        ? undefined
+        : await this.commentIssue(repo, number, comment);
+    return { ...(await this.editIssue(repo, number, { state })), ...posted };
+  }
+
+  async commentIssue(
+    repo: RepositoryRef,
+    number: number,
+    body: string,
+  ): Promise<Record<string, unknown>> {
+    const response = await this.http.api<ApiComment>({
+      method: 'POST',
+      path: `${repoPath(repo)}/issues/${number}/comments`,
+      body: { body },
+    });
+    return {
+      comment: normalizeComment(this.config, repo, response.data, true),
+    };
+  }
+
+  private async getIssue(
+    repo: RepositoryRef,
+    number: number,
+  ): Promise<IssueIdentity> {
+    return normalizeIssue(
+      this.config,
+      repo,
+      await this.getIssueRaw(repo, number),
+    );
+  }
+
+  private async getIssueRaw(
+    repo: RepositoryRef,
+    number: number,
+  ): Promise<ApiIssue> {
+    const response = await this.http.api<ApiIssue>({
+      path: `${repoPath(repo)}/issues/${number}`,
+    });
+    return response.data;
+  }
+
+  /** An empty name clears the milestone; an absent one leaves it alone. */
+  private async resolveOptionalMilestone(
+    repo: RepositoryRef,
+    name: string | undefined,
+  ): Promise<MilestoneIdentity | null> {
+    if (name === undefined || name.trim() === '') return null;
+    return this.resolveMilestone(repo, name);
   }
 
   private async applyLabel(
@@ -758,11 +1073,18 @@ export function parseRepository(raw: string): RepositoryRef {
 }
 
 export function parsePullNumber(raw: string): number {
+  return parseNumber(raw, 'Pull request number');
+}
+
+export function parseIssueNumber(raw: string): number {
+  return parseNumber(raw, 'Issue number');
+}
+
+function parseNumber(raw: string, label: string): number {
   if (!/^[1-9]\d*$/.test(raw))
-    throw usageError('Pull request number must be a positive integer');
+    throw usageError(`${label} must be a positive integer`);
   const value = Number(raw);
-  if (!Number.isSafeInteger(value))
-    throw usageError('Pull request number is too large');
+  if (!Number.isSafeInteger(value)) throw usageError(`${label} is too large`);
   return value;
 }
 
@@ -860,19 +1182,144 @@ export function normalizeLabelColor(raw: string | undefined): string {
     : value;
 }
 
-function matchLabel(
-  page: Paginated<LabelIdentity>,
+function normalizeIssue(
+  config: ConnectionConfig,
   repo: RepositoryRef,
+  issue: ApiIssue,
+): IssueIdentity {
+  if (
+    !Number.isSafeInteger(issue.number) ||
+    !issue.number ||
+    issue.number < 1
+  ) {
+    throw new ForgejoAxiError(
+      'Forgejo issue response omitted a valid number',
+      'INVALID_RESPONSE',
+    );
+  }
+  const number = issue.number;
+  return {
+    number,
+    url: `${canonicalRepoUrl(config, repo)}/issues/${number}`,
+    api_url: `${canonicalRepoApiUrl(config, repo)}/issues/${number}`,
+    state: issue.state ?? 'unknown',
+    title: issue.title ?? '',
+    labels: (issue.labels ?? []).map((label) => label.name ?? ''),
+    assignees: (issue.assignees ?? []).map((user) => user.login ?? ''),
+    milestone: issue.milestone?.title ?? null,
+    comments: issue.comments ?? 0,
+    is_pull_request: Boolean(issue.pull_request),
+    user: issue.user?.login ?? null,
+    created_at: issue.created_at ?? null,
+    updated_at: issue.updated_at ?? null,
+    closed_at: issue.closed_at ?? null,
+  };
+}
+
+function normalizeComment(
+  config: ConnectionConfig,
+  repo: RepositoryRef,
+  comment: ApiComment,
+  full: boolean,
+): CommentIdentity {
+  if (!Number.isSafeInteger(comment.id) || !comment.id || comment.id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo comment response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  return {
+    id: comment.id,
+    api_url: `${canonicalRepoApiUrl(config, repo)}/issues/comments/${comment.id}`,
+    user: comment.user?.login ?? null,
+    created_at: comment.created_at ?? null,
+    updated_at: comment.updated_at ?? null,
+    ...previewBody(comment.body, full),
+  };
+}
+
+function normalizeMilestone(milestone: ApiMilestone): MilestoneIdentity {
+  if (
+    !Number.isSafeInteger(milestone.id) ||
+    !milestone.id ||
+    milestone.id < 1
+  ) {
+    throw new ForgejoAxiError(
+      'Forgejo milestone response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  return {
+    id: milestone.id,
+    name: milestone.title ?? '',
+    state: milestone.state ?? 'unknown',
+  };
+}
+
+function previewBody(raw: string | undefined, full: boolean): BodyPreview {
+  const body = raw ?? '';
+  const characters = [...body];
+  const previewLimit = 500;
+  const truncated = !full && characters.length > previewLimit;
+  return {
+    body: truncated
+      ? `${characters.slice(0, previewLimit - 3).join('')}...`
+      : body,
+    body_length: characters.length,
+    body_truncated: truncated,
+  };
+}
+
+function sameNames(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const sorted = [...right].sort();
+  return [...left].sort().every((value, index) => value === sorted[index]);
+}
+
+interface NamedIdentity {
+  id: number;
+  name: string;
+}
+
+/** How one kind of name-addressed entity reports a failed lookup. */
+interface NameLookup {
+  code: 'LABEL' | 'MILESTONE';
+  noun: string;
+  hint: string;
+  ceilingHint: string;
+}
+
+function labelLookup(repo: RepositoryRef): NameLookup {
+  return {
+    code: 'LABEL',
+    noun: 'label',
+    hint: `Run \`forgejo-axi label list --repo ${repo.fullName}\``,
+    ceilingHint: 'Reduce the repository label count and retry',
+  };
+}
+
+function milestoneLookup(repo: RepositoryRef): NameLookup {
+  return {
+    code: 'MILESTONE',
+    noun: 'milestone',
+    hint: `Run \`forgejo-axi api GET repos/${repo.fullName}/milestones\``,
+    ceilingHint: 'Reduce the repository milestone count and retry',
+  };
+}
+
+function matchNamed<T extends NamedIdentity>(
+  page: Paginated<T>,
   name: string,
-): LabelIdentity | null {
-  const matches = page.items.filter((label) => label.name === name);
+  lookup: NameLookup,
+): T | null {
+  const matches = page.items.filter((item) => item.name === name);
   if (matches.length > 1) {
     throw new ForgejoAxiError(
-      `Repository has ${matches.length} labels named ${name}`,
-      'LABEL_AMBIGUOUS',
+      `Repository has ${matches.length} ${lookup.noun}s named ${name}`,
+      `${lookup.code}_AMBIGUOUS`,
       {
-        details: { name, ids: matches.map((label) => label.id) },
-        suggestions: [labelListHint(repo)],
+        details: { name, ids: matches.map((item) => item.id) },
+        suggestions: [lookup.hint],
         usage: true,
       },
     );
@@ -880,41 +1327,34 @@ function matchLabel(
   return matches[0] ?? null;
 }
 
-function requireLabel(
-  page: Paginated<LabelIdentity>,
-  repo: RepositoryRef,
+function requireNamed<T extends NamedIdentity>(
+  page: Paginated<T>,
   name: string,
-): LabelIdentity {
-  const label = matchLabel(page, repo, name);
+  lookup: NameLookup,
+): T {
+  const match = matchNamed(page, name, lookup);
   // An incomplete search cannot prove the match is the only one carrying the name.
-  if (!page.complete) throw labelSearchIncomplete(page);
-  if (label) return label;
+  if (!page.complete) throw namedSearchIncomplete(page, lookup);
+  if (match) return match;
   throw new ForgejoAxiError(
-    `Repository has no label named ${name}`,
-    'LABEL_NOT_FOUND',
-    {
-      details: { name },
-      suggestions: [labelListHint(repo)],
-      usage: true,
-    },
+    `Repository has no ${lookup.noun} named ${name}`,
+    `${lookup.code}_NOT_FOUND`,
+    { details: { name }, suggestions: [lookup.hint], usage: true },
   );
 }
 
-function labelSearchIncomplete(
-  page: Paginated<LabelIdentity>,
+function namedSearchIncomplete(
+  page: Paginated<unknown>,
+  lookup: NameLookup,
 ): ForgejoAxiError {
   return new ForgejoAxiError(
-    'Label search reached the pagination safety ceiling',
+    `Repository ${lookup.noun} search reached the pagination safety ceiling`,
     'PAGINATION_INCOMPLETE',
     {
       details: { pages: page.pages, fetched: page.items.length },
-      suggestions: ['Reduce the repository label count and retry'],
+      suggestions: [lookup.ceilingHint],
     },
   );
-}
-
-function labelListHint(repo: RepositoryRef): string {
-  return `Run \`forgejo-axi label list --repo ${repo.fullName}\``;
 }
 
 function latestStatuses(input: ApiStatus[]): NormalizedStatus[] {

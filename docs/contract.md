@@ -24,6 +24,13 @@ forgejo-axi label list --repo OWNER/REPO [--limit N|--full]
 forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT]
 forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--description TEXT]
 forgejo-axi label delete --repo OWNER/REPO NAME
+forgejo-axi issue list --repo OWNER/REPO [--state open|closed|all] [--label NAMES] [--assignee USER] [--milestone NAME] [--limit N|--full] [--fields LIST|all]
+forgejo-axi issue view --repo OWNER/REPO NUMBER [--full]
+forgejo-axi issue create --repo OWNER/REPO --title TITLE [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME]
+forgejo-axi issue edit --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME]
+forgejo-axi issue close --repo OWNER/REPO NUMBER [--comment TEXT]
+forgejo-axi issue reopen --repo OWNER/REPO NUMBER
+forgejo-axi issue comment --repo OWNER/REPO NUMBER --body TEXT
 ```
 
 With no arguments and no configured base URL, the CLI returns a configuration-free home document. With `FORGEJO_BASE_URL` configured, bare invocation performs the same runtime probes as `status` and may fail with a runtime exit. `--help` and `--version` are top-level, sole-argument invocations.
@@ -67,6 +74,9 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `pr checks`: `{checks}`; `pr mergeability`: `{mergeability}`; `pr merge` and `pr merged`: `{proof}`.
 - `label list`: `{labels,page_info,next?}`. A repository with no labels is `labels: []` with `page_info.fetched=0` and exit `0`.
 - `label create`: `{created,updated,label}`. `label edit`: `{updated,label}`. `label delete`: `{deleted,label}`.
+- `issue list`: `{issues,page_info,next?}`. Rows carry the selected identity fields, defaulting to `number,title,state,labels`. A repository with no matching issues is `issues: []` with `page_info.fetched=0` and exit `0`.
+- `issue view`: `{issue,comments,comment_info,next?}`. `issue` is an issue identity plus `body`, `body_length`, and `body_truncated`. `comment_info` is `{fetched,displayed,truncated}`.
+- `issue create`: `{issue}`. `issue edit`: `{updated,issue}`. `issue close` and `issue reopen`: `{updated,issue}`, plus `comment` when `--comment` posted one. `issue comment`: `{comment}`.
 
 ## Stable lifecycle objects
 
@@ -85,6 +95,18 @@ A label identity is `{id, name, color, description, is_archived, api_url}`. `api
 Labels are addressed by name at the interface and resolved to their numeric id internally; the same resolution backs every name-addressed command. Resolution failures are usage errors with exit `2` and a `help` entry naming the `label list` command for the repository: `LABEL_NOT_FOUND` when no label carries the name, and `LABEL_AMBIGUOUS` with `details.ids` when more than one does, since Forgejo does not enforce label-name uniqueness. Resolution never mutates off an incomplete fetch: reaching the pagination ceiling raises `PAGINATION_INCOMPLETE` (exit `1`) whether the name matched or not, because an unread page can carry a second label of the same name. Only `label list` reports an incomplete fetch as data rather than failing.
 
 Because Forgejo re-derives a label's archived state from every edit request, patches resend the label's current `is_archived` value; editing an archived label never unarchives it as a side effect.
+
+An issue identity is `{number, url, api_url, state, title, labels, assignees, milestone, comments, is_pull_request, user, created_at, updated_at, closed_at}`. `url` and `api_url` are constructed from the configured canonical base URL and repository identity, not trusted response links. `labels` and `assignees` are name arrays and `milestone` is a name or `null`; ids stay internal. A comment identity is `{id, api_url, user, created_at, updated_at, body, body_length, body_truncated}`.
+
+`issue list` returns issues only — pull requests are excluded and reached through `pr list`. Its `--label` and `--milestone` filters resolve names through the same name-addressing described above before the query is sent, because Forgejo silently discards unknown filter names and would otherwise return an unfiltered result that reads like a filtered one; an unknown name is `LABEL_NOT_FOUND` or `MILESTONE_NOT_FOUND` (exit `2`) and no listing request is made. `--label` and `--assignee` take comma-separated values.
+
+`issue view` previews a long body on the same terms as `pr view`: the first 500 code points with an ellipsis, with `body_length` and `body_truncated` reporting the elision, and `--full` returning the whole body. Forgejo returns an entire comment thread in one response and ignores pagination on that endpoint, so the thread is fetched once and capped at display time; TOON shows 30 comments and `--full` or `--json` shows every one.
+
+`issue edit` reconciles: it fetches current state and sends only the fields that differ, reporting `updated=false` and issuing no mutation when the issue already matches. Every label and milestone name resolves before the first mutation, so an unknown name cannot leave an issue half-edited. Labels are replaced through Forgejo's issue-labels endpoint rather than the issue patch body, which has no labels field. An empty `--label`, `--assignee`, or `--milestone` value clears that field. `issue edit` with no field flag is a usage error (exit `2`).
+
+`issue close --comment` posts the comment before the state change, so a comment is never attributed to an issue that failed to close. Closing an already-closed issue is `updated=false`, but a supplied comment still posts — comments are not idempotent.
+
+`issue comment` accepts a pull request number: Forgejo serves pull request discussion through the issue comments endpoint, so the two are the same operation and no separate `pr comment` exists.
 
 `label create` reconciles: an existing label of that name is patched toward the requested color and description rather than duplicated, reporting `created=false`. A label already in the desired state is exit `0` and mutation-free. New labels default to color `#ededed` and an empty description. `--color` must be a six-digit hex color, validated before any request. `label edit --name` renames in place, preserving the label's issue assignments; renaming onto a name the repository already carries is refused with `LABEL_EXISTS` (exit `2`).
 
