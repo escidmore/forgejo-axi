@@ -1,6 +1,6 @@
-# Future live-test matrix
+# Live-test matrix
 
-Live tests are deliberately absent from default CI. Enabling them requires user-approved, isolated endpoints and least-privilege test repositories; tests must never target production repositories or infer an endpoint from local configuration.
+The live lanes are the project's primary evidence of correctness — a fixture can only prove the code agrees with itself, and the run-family schema bugs showed both layers agreeing on shapes Forgejo never sends. Running both lanes locally is required before committing any change to API requests, response handling, or fixtures. They stay out of automated CI only because CI lacks the hosts; the endpoints are user-approved, isolated, least-privilege test repositories, and tests must never target production repositories or infer an endpoint from ordinary local configuration.
 
 | Lane             | Runtime  | Required assertions                                                                                 |
 | ---------------- | -------- | --------------------------------------------------------------------------------------------------- |
@@ -41,4 +41,4 @@ Two independent guards run before anything is written. The harness targets `FORG
 
 Each lane should receive an explicit base URL, repository, host-scoped token secret, expected CA, and expected major/minor through protected CI environment variables. The harness should create a unique branch and PR only inside a pre-provisioned disposable repository, prove an expected-head race, delete its branch when safe, redact all captured traffic, and fail before mutation if the host identity or repository allowlist differs.
 
-Capability expectations must be checked against the runtime Swagger probe, not derived from the expected version. A missing log route is an unsupported capability and must not alter commit-status results. Keep local fixture/fake-server coverage as the required PR gate; make live lanes manually approved, non-blocking until their isolation and cleanup controls are validated, and never share tokens or repositories between the 15 and 16 lanes.
+Capability expectations must be checked against the runtime Swagger probe, not derived from the expected version. A missing log route is an unsupported capability and must not alter commit-status results. Fixture/fake-server coverage remains the automated CI gate for speed, but the live lanes are the required local gate for any API-touching change, and never share tokens or repositories between the 15 and 16 lanes.
