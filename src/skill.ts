@@ -51,7 +51,7 @@ nothing is cached between invocations.
 | \`FORGEJO_REPOSITORY\` | Default \`OWNER/REPO\`, used when \`--repo\` is omitted |
 | \`FORGEJO_TOKEN_<HOST_KEY>\` | Host-scoped API token |
 | \`FORGEJO_TOKEN\` | Token honoured only when the base URL came from \`FORGEJO_BASE_URL\` |
-| \`FORGEJO_TIMEOUT_MS\` | Request timeout in milliseconds; default 15000 |
+| \`FORGEJO_TIMEOUT_MS\` | Request timeout in milliseconds |
 | \`FORGEJO_CA_FILE\` | Replacement CA trust bundle, not an addition to the platform store |
 
 \`HOST_KEY\` is the uppercase URL host, including a non-default port, with every
@@ -86,20 +86,24 @@ hosts cannot share a credential.
 - A capability the connected host does not advertise returns
   \`{supported: false, capability, next}\` at exit \`0\`. That is a definite answer,
   not a failure, and no request is made against the missing API.
-- Lists carry \`page_info: {complete, pages, fetched, total, displayed,
-  truncated}\`. TOON displays 30 rows by default, \`--json\` displays every fetched
-  row, and \`--limit\` is TOON-only and rejected alongside \`--json\`.
-  \`complete: false\` means the 5000-row fetch ceiling was reached, so an
-  empty-looking result may be incomplete.
+- Lists carry a \`page_info\` block. \`complete: false\` means the fetch ceiling
+  was reached, so an empty-looking result may be incomplete. TOON truncates long
+  lists and says so, \`--json\` emits every fetched row, and \`--limit\` is
+  TOON-only and rejected alongside \`--json\`.
 - Capabilities are probed from the host's runtime API document per route, never
   inferred from its version.
 - A bare \`--\` ends flag parsing; it is the only way to address a value that
   begins with \`-\`, such as a label named \`-blocked\`.
 
+\`docs/contract.md\` in the repository is the authority for output schemas,
+status semantics, and exit codes.
+
 ## Command catalog`;
 
 function fenced(help: string): string {
-  return `\`\`\`text\n${help.replace(/\n+$/, '')}\n\`\`\``;
+  // Strip exactly one trailing newline, matching helpText() in src/cli.ts, so
+  // the skill renders a help string the same way the CLI prints it.
+  return `\`\`\`text\n${help.replace(/\n$/, '')}\n\`\`\``;
 }
 
 function catalog(): string[] {
@@ -123,7 +127,7 @@ function catalog(): string[] {
 
 export function renderSkill(): string {
   const sections = [
-    `---\nname: ${SKILL_NAME}\ndescription: "${SKILL_DESCRIPTION}"\n---`,
+    `---\nname: ${SKILL_NAME}\ndescription: "${SKILL_DESCRIPTION.replace(/["\\]/g, '\\$&')}"\n---`,
     GENERATED_NOTE,
     `# ${SKILL_NAME}`,
     `${DESCRIPTION}.`,

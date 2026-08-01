@@ -1,0 +1,2 @@
+# The skill is byte-compared against its generator, which always writes LF.
+skills/** text eol=lf

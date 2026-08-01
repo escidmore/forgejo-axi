@@ -47,7 +47,7 @@ nothing is cached between invocations.
 | `FORGEJO_REPOSITORY` | Default `OWNER/REPO`, used when `--repo` is omitted |
 | `FORGEJO_TOKEN_<HOST_KEY>` | Host-scoped API token |
 | `FORGEJO_TOKEN` | Token honoured only when the base URL came from `FORGEJO_BASE_URL` |
-| `FORGEJO_TIMEOUT_MS` | Request timeout in milliseconds; default 15000 |
+| `FORGEJO_TIMEOUT_MS` | Request timeout in milliseconds |
 | `FORGEJO_CA_FILE` | Replacement CA trust bundle, not an addition to the platform store |
 
 `HOST_KEY` is the uppercase URL host, including a non-default port, with every
@@ -82,15 +82,17 @@ hosts cannot share a credential.
 - A capability the connected host does not advertise returns
   `{supported: false, capability, next}` at exit `0`. That is a definite answer,
   not a failure, and no request is made against the missing API.
-- Lists carry `page_info: {complete, pages, fetched, total, displayed,
-  truncated}`. TOON displays 30 rows by default, `--json` displays every fetched
-  row, and `--limit` is TOON-only and rejected alongside `--json`.
-  `complete: false` means the 5000-row fetch ceiling was reached, so an
-  empty-looking result may be incomplete.
+- Lists carry a `page_info` block. `complete: false` means the fetch ceiling
+  was reached, so an empty-looking result may be incomplete. TOON truncates long
+  lists and says so, `--json` emits every fetched row, and `--limit` is
+  TOON-only and rejected alongside `--json`.
 - Capabilities are probed from the host's runtime API document per route, never
   inferred from its version.
 - A bare `--` ends flag parsing; it is the only way to address a value that
   begins with `-`, such as a label named `-blocked`.
+
+`docs/contract.md` in the repository is the authority for output schemas,
+status semantics, and exit codes.
 
 ## Command catalog
 
@@ -228,6 +230,37 @@ Example:
   forgejo-axi pr view --repo owner/repo 42 --full
 ```
 
+#### pr reviews
+
+```text
+forgejo-axi pr reviews — list reviews with their inline comments
+
+Usage:
+  forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full] [connection flags]
+
+Flags:
+  --limit N   Display this many reviews instead of the default 30
+  --full      Display every review, with complete bodies instead of previews
+
+Example:
+  forgejo-axi pr reviews --repo owner/repo 42 --full
+```
+
+#### pr diff
+
+```text
+forgejo-axi pr diff — print the unified diff
+
+Usage:
+  forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full] [connection flags]
+
+Flags:
+  --full   Print every line instead of the first 30
+
+Example:
+  forgejo-axi pr diff --repo owner/repo 42 --full
+```
+
 #### pr create
 
 ```text
@@ -298,37 +331,6 @@ Usage:
 
 Example:
   forgejo-axi pr merged --repo owner/repo 42
-```
-
-#### pr reviews
-
-```text
-forgejo-axi pr reviews — list reviews with their inline comments
-
-Usage:
-  forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full] [connection flags]
-
-Flags:
-  --limit N   Display this many reviews instead of the default 30
-  --full      Display every review, with complete bodies instead of previews
-
-Example:
-  forgejo-axi pr reviews --repo owner/repo 42 --full
-```
-
-#### pr diff
-
-```text
-forgejo-axi pr diff — print the unified diff
-
-Usage:
-  forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full] [connection flags]
-
-Flags:
-  --full   Print every line instead of the first 30
-
-Example:
-  forgejo-axi pr diff --repo owner/repo 42 --full
 ```
 
 ### label
