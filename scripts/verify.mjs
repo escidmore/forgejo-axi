@@ -9,15 +9,10 @@
  * without Forgejo configuration in its environment. The shared npm cache is
  * the only thing outside that directory a run writes to.
  */
+import { ok as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import console from 'node:console';
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -64,10 +59,6 @@ function sh(command, args, options = {}) {
     );
   }
   return { stdout: result.stdout, stderr: result.stderr };
-}
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
 }
 
 function step(name, run) {
@@ -174,7 +165,6 @@ try {
       'forgejo-axi',
       'SKILL.md',
     );
-    assert(existsSync(installed), `installer wrote no skill to ${installed}`);
     assert(
       readFileSync(installed, 'utf8') ===
         readFileSync(join(checkout, 'skills/forgejo-axi/SKILL.md'), 'utf8'),

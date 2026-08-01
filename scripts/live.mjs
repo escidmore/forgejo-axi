@@ -107,6 +107,10 @@ function cli(args, { allowFail = false } = {}) {
   }
 }
 
+// Nearly every invocation targets the lane repository; the exceptions
+// (the status probe and raw api paths) call cli directly.
+const repoCli = (args, options) => cli([...args, '--repo', REPO], options);
+
 async function raw(method, path, body) {
   const response = await globalThis.fetch(`${API}/${path}`, {
     method,
@@ -168,12 +172,10 @@ const seedStatus = (sha, state, context) =>
 // underneath is refused rather than merged.
 async function mergeWhenReady(number, method, expectedHead) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = cli(
+    const result = repoCli(
       [
         'pr',
         'merge',
-        '--repo',
-        REPO,
         String(number),
         '--method',
         method,
@@ -187,18 +189,6 @@ async function mergeWhenReady(number, method, expectedHead) {
     await sleep(1000);
   }
   return { code: 'STILL_NOT_MERGEABLE' };
-}
-
-// Forgejo computes mergeability in the background and answers 405 "please try
-// again later" until that lands. A fake server settles instantly, so this wait
-// only exists against a real one.
-async function settle(number) {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    const state = await raw('GET', `repos/${REPO}/pulls/${number}`);
-    if (state.data?.mergeable === true) return true;
-    await sleep(1000);
-  }
-  return false;
 }
 
 // ---- refuse before any mutation ---------------------------------------------
@@ -273,15 +263,7 @@ async function probeBranch(name, from) {
 try {
   // ---- seed ----------------------------------------------------------------
   for (const name of ['live-bug', 'live-triage']) {
-    const outcome = cli([
-      'label',
-      'create',
-      '--repo',
-      REPO,
-      name,
-      '--color',
-      '#ededed',
-    ]);
+    const outcome = repoCli(['label', 'create', name, '--color', '#ededed']);
     // `label create` reconciles an existing label rather than duplicating it,
     // so tracking the name unconditionally would make cleanup delete a label
     // the repository already owned.
@@ -292,11 +274,9 @@ try {
   ok('seed milestone', ms.status === 201);
 
   // ---- create / view -------------------------------------------------------
-  const made = cli([
+  const made = repoCli([
     'issue',
     'create',
-    '--repo',
-    REPO,
     '--title',
     'live: scheduler race',
     '--body',
@@ -322,11 +302,9 @@ try {
   );
 
   // ---- edit reconcile ------------------------------------------------------
-  const edit1 = cli([
+  const edit1 = repoCli([
     'issue',
     'edit',
-    '--repo',
-    REPO,
     String(n),
     '--label',
     'live-bug,live-triage',
@@ -335,45 +313,31 @@ try {
     'edit replaces labels through the labels endpoint',
     edit1.updated === true && edit1.issue.labels.length === 2,
   );
-  const edit2 = cli([
+  const edit2 = repoCli([
     'issue',
     'edit',
-    '--repo',
-    REPO,
     String(n),
     '--label',
     'live-bug,live-triage',
   ]);
   ok('repeat edit is a no-op', edit2.updated === false);
 
-  const cleared = cli([
-    'issue',
-    'edit',
-    '--repo',
-    REPO,
-    String(n),
-    '--milestone',
-    '',
-  ]);
+  const cleared = repoCli(['issue', 'edit', String(n), '--milestone', '']);
   ok('an empty value clears the milestone', cleared.issue.milestone === null);
 
   // ---- comment / close / reopen -------------------------------------------
-  const commented = cli([
+  const commented = repoCli([
     'issue',
     'comment',
-    '--repo',
-    REPO,
     String(n),
     '--body',
     'live comment',
   ]);
   ok('comment returns an identity', Number.isInteger(commented.comment.id));
 
-  const closed = cli([
+  const closed = repoCli([
     'issue',
     'close',
-    '--repo',
-    REPO,
     String(n),
     '--comment',
     'closing from the live matrix',
@@ -387,24 +351,17 @@ try {
   ok('closed_at populated', Boolean(closed.issue.closed_at));
   ok(
     'reopen restores open',
-    cli(['issue', 'reopen', '--repo', REPO, String(n)]).issue.state === 'open',
+    repoCli(['issue', 'reopen', String(n)]).issue.state === 'open',
   );
   ok(
     'reopen is idempotent',
-    cli(['issue', 'reopen', '--repo', REPO, String(n)]).updated === false,
+    repoCli(['issue', 'reopen', String(n)]).updated === false,
   );
 
   // ---- filters must actually narrow ----------------------------------------
   // Forgejo answers an unrecognised filter with an unfiltered list, so a filter
   // that silently does nothing looks exactly like one that works.
-  const other = cli([
-    'issue',
-    'create',
-    '--repo',
-    REPO,
-    '--title',
-    'live: unrelated',
-  ]);
+  const other = repoCli(['issue', 'create', '--title', 'live: unrelated']);
   created.issues.push(other.issue.number);
   const excludesOther = (list) =>
     list.issues.every((i) => i.number !== other.issue.number) &&
@@ -412,32 +369,28 @@ try {
 
   ok(
     'label filter narrows',
-    excludesOther(
-      cli(['issue', 'list', '--repo', REPO, '--label', 'live-triage']),
-    ),
+    excludesOther(repoCli(['issue', 'list', '--label', 'live-triage'])),
   );
-  cli(['issue', 'edit', '--repo', REPO, String(n), '--milestone', 'v-live']);
+  repoCli(['issue', 'edit', String(n), '--milestone', 'v-live']);
   ok(
     'milestone filter narrows',
-    excludesOther(
-      cli(['issue', 'list', '--repo', REPO, '--milestone', 'v-live']),
-    ),
+    excludesOther(repoCli(['issue', 'list', '--milestone', 'v-live'])),
   );
   const owner = REPO.split('/')[0];
-  cli(['issue', 'edit', '--repo', REPO, String(n), '--assignee', owner]);
+  repoCli(['issue', 'edit', String(n), '--assignee', owner]);
   ok(
     'assignee filter narrows',
-    excludesOther(cli(['issue', 'list', '--repo', REPO, '--assignee', owner])),
+    excludesOther(repoCli(['issue', 'list', '--assignee', owner])),
   );
   ok(
     'state filter narrows',
-    cli(['issue', 'list', '--repo', REPO, '--state', 'closed']).issues.every(
+    repoCli(['issue', 'list', '--state', 'closed']).issues.every(
       (i) => i.number !== n,
     ),
   );
   ok(
     'unknown filter label refuses',
-    cli(['issue', 'list', '--repo', REPO, '--label', 'no-such-label'], {
+    repoCli(['issue', 'list', '--label', 'no-such-label'], {
       allowFail: true,
     }).code === 'LABEL_NOT_FOUND',
   );
@@ -445,14 +398,7 @@ try {
   // ---- does this host paginate comments? -----------------------------------
   // The whole thread is read in one request. If a host ever honours page/limit
   // that read silently truncates, so this must be proven per lane.
-  const long = cli([
-    'issue',
-    'create',
-    '--repo',
-    REPO,
-    '--title',
-    'live: comment thread',
-  ]);
+  const long = repoCli(['issue', 'create', '--title', 'live: comment thread']);
   const t = long.issue.number;
   created.issues.push(t);
   for (let i = 1; i <= 55; i += 1)
@@ -472,7 +418,7 @@ try {
     ),
     `page1=${p1.data.length} page2=${p2.data.length} total=${p1.total} link=${p1.link ? 'yes' : 'none'}`,
   );
-  const viewed = cli(['issue', 'view', '--repo', REPO, String(t), '--full']);
+  const viewed = repoCli(['issue', 'view', String(t), '--full']);
   ok('issue view returns the whole thread', viewed.comments.length === 55);
   ok(
     'comment_info counts match',
@@ -480,24 +426,16 @@ try {
   );
 
   // ---- body preview --------------------------------------------------------
-  const big = cli([
+  const big = repoCli([
     'issue',
     'create',
-    '--repo',
-    REPO,
     '--title',
     'live: long body',
     '--body',
     'x'.repeat(600),
   ]);
   created.issues.push(big.issue.number);
-  const preview = cli([
-    'issue',
-    'view',
-    '--repo',
-    REPO,
-    String(big.issue.number),
-  ]);
+  const preview = repoCli(['issue', 'view', String(big.issue.number)]);
   ok(
     'body preview elides at 500 code points',
     preview.issue.body.length === 500 &&
@@ -507,7 +445,7 @@ try {
   );
 
   // ---- repo view -----------------------------------------------------------
-  const repo = cli(['repo', 'view', '--repo', REPO]).repository;
+  const repo = repoCli(['repo', 'view']).repository;
   ok(
     'repo view reports canonical identity',
     repo.full_name === REPO &&
@@ -519,17 +457,15 @@ try {
   // workflow has run — exactly the envelope a hand-written fixture once got
   // wrong, so decode it against the genuine article.
   if (probed.capabilities?.runs === true) {
-    const runs = cli(['run', 'list', '--repo', REPO]);
+    const runs = repoCli(['run', 'list']);
     ok(
       'run list decodes the real envelope',
       Array.isArray(runs.runs) && runs.page_info.complete === true,
       `fetched=${runs.runs.length}`,
     );
-    const filtered = cli([
+    const filtered = repoCli([
       'run',
       'list',
-      '--repo',
-      REPO,
       '--status',
       'success',
       '--branch',
@@ -541,11 +477,11 @@ try {
     );
     ok(
       'run view maps a missing run to NOT_FOUND',
-      cli(['run', 'view', '--repo', REPO, '999999999'], { allowFail: true })
-        .code === 'NOT_FOUND',
+      repoCli(['run', 'view', '999999999'], { allowFail: true }).code ===
+        'NOT_FOUND',
     );
   } else {
-    const unsupported = cli(['run', 'list', '--repo', REPO], {
+    const unsupported = repoCli(['run', 'list'], {
       allowFail: true,
     });
     ok(
@@ -584,7 +520,7 @@ try {
     `pages=${walked.page_info.pages} fetched=${walked.page_info.fetched}`,
   );
 
-  const allLabels = cli(['label', 'list', '--repo', REPO, '--full']);
+  const allLabels = repoCli(['label', 'list', '--full']);
   const listedNames = new Set(allLabels.labels.map((l) => l.name));
   ok(
     'label list crosses the page boundary',
@@ -595,15 +531,8 @@ try {
 
   ok(
     'label edit updates in place',
-    cli([
-      'label',
-      'edit',
-      '--repo',
-      REPO,
-      'live-triage',
-      '--description',
-      'live edited',
-    ]).updated === true,
+    repoCli(['label', 'edit', 'live-triage', '--description', 'live edited'])
+      .updated === true,
   );
 
   // ---- pull request lane ---------------------------------------------------
@@ -613,11 +542,9 @@ try {
   });
   await probeBranch(BRANCH);
 
-  const pr = cli([
+  const pr = repoCli([
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     BRANCH,
     '--base',
@@ -629,11 +556,9 @@ try {
   if (PULL !== null) created.pulls.push(PULL);
   ok('open a pull request', Number.isInteger(PULL));
 
-  const posted = cli([
+  const posted = repoCli([
     'issue',
     'comment',
-    '--repo',
-    REPO,
     String(PULL),
     '--body',
     'live: threaded into PR discussion',
@@ -650,18 +575,15 @@ try {
   );
   ok(
     'issue view flags a pull request',
-    cli(['issue', 'view', '--repo', REPO, String(PULL)]).issue
-      .is_pull_request === true,
+    repoCli(['issue', 'view', String(PULL)]).issue.is_pull_request === true,
   );
 
   // Only meaningful once a pull request exists, and only if the field is
   // actually selected — the default schema omits it, so asking without
   // --fields would compare against undefined and prove nothing.
-  const listed = cli([
+  const listed = repoCli([
     'issue',
     'list',
-    '--repo',
-    REPO,
     '--full',
     '--fields',
     'number,is_pull_request',
@@ -676,34 +598,26 @@ try {
   // ---- pull request reads --------------------------------------------------
   ok(
     'pr list includes the open pull request',
-    cli(['pr', 'list', '--repo', REPO, '--full']).pull_requests.some(
+    repoCli(['pr', 'list', '--full']).pull_requests.some(
       (p) => p.number === PULL,
     ),
   );
   ok(
     'pr find locates it by head branch',
-    cli(['pr', 'find', '--repo', REPO, '--head', BRANCH]).pull_request
-      .number === PULL,
+    repoCli(['pr', 'find', '--head', BRANCH]).pull_request.number === PULL,
   );
-  const prView = cli(['pr', 'view', '--repo', REPO, String(PULL)]).pull_request;
+  const prView = repoCli(['pr', 'view', String(PULL)]).pull_request;
   ok('pr view reports the head sha', /^[0-9a-f]{40}$/.test(prView.head_sha));
   ok(
     'pr update changes the title',
-    cli([
-      'pr',
-      'update',
-      '--repo',
-      REPO,
-      String(PULL),
-      '--title',
-      'live: probe (updated)',
-    ]).pull_request.title === 'live: probe (updated)',
+    repoCli(['pr', 'update', String(PULL), '--title', 'live: probe (updated)'])
+      .pull_request.title === 'live: probe (updated)',
   );
 
   // ---- checks against real commit statuses ---------------------------------
   // An empty status set must read as none, never as a failure — a host without
   // Actions has no statuses to report and that is not a red check.
-  const empty = cli(['pr', 'checks', '--repo', REPO, String(PULL)]);
+  const empty = repoCli(['pr', 'checks', String(PULL)]);
   ok(
     'no statuses reads as none, not failure',
     empty.checks.reported === 0 && empty.checks.state === 'none',
@@ -711,7 +625,7 @@ try {
   );
 
   await seedStatus(prView.head_sha, 'success', 'live/probe');
-  const green = cli(['pr', 'checks', '--repo', REPO, String(PULL)]);
+  const green = repoCli(['pr', 'checks', String(PULL)]);
   ok(
     'pr checks aggregates a real commit status',
     green.checks.reported === 1 &&
@@ -719,13 +633,7 @@ try {
       green.checks.statuses.some((s) => s.context === 'live/probe'),
     `reported=${green.checks.reported} state=${green.checks.state}`,
   );
-  const mergeability = cli([
-    'pr',
-    'mergeability',
-    '--repo',
-    REPO,
-    String(PULL),
-  ]);
+  const mergeability = repoCli(['pr', 'mergeability', String(PULL)]);
   ok(
     'mergeability reflects the real head and checks',
     mergeability.mergeability.head_sha === prView.head_sha &&
@@ -734,14 +642,14 @@ try {
   );
 
   // ---- reviews and diff (read-only) ----------------------------------------
-  const noReviews = cli(['pr', 'reviews', '--repo', REPO, String(PULL)]);
+  const noReviews = repoCli(['pr', 'reviews', String(PULL)]);
   ok(
     'a pull request with no reviews lists none',
     noReviews.reviews.length === 0 && noReviews.page_info.fetched === 0,
     `fetched=${noReviews.page_info.fetched}`,
   );
 
-  const diff = cli(['pr', 'diff', '--repo', REPO, String(PULL)]);
+  const diff = repoCli(['pr', 'diff', String(PULL)]);
   ok(
     'pr diff returns the diff Forgejo generates for the pull request',
     diff.diff.includes('diff --git') &&
@@ -765,7 +673,7 @@ try {
     submitted.status === 200,
     `status=${submitted.status}`,
   );
-  const reviewed = cli(['pr', 'reviews', '--repo', REPO, String(PULL)]);
+  const reviewed = repoCli(['pr', 'reviews', String(PULL)]);
   const probe = reviewed.reviews.find(
     (review) => review.body === 'live probe review',
   );
@@ -778,16 +686,8 @@ try {
   );
 
   // The expected-head guard must refuse a stale head rather than merge it.
-  const raced = cli(
-    [
-      'pr',
-      'merge',
-      '--repo',
-      REPO,
-      String(PULL),
-      '--expected-head',
-      '0'.repeat(40),
-    ],
+  const raced = repoCli(
+    ['pr', 'merge', String(PULL), '--expected-head', '0'.repeat(40)],
     { allowFail: true },
   );
   const stillOpen = await raw('GET', `repos/${REPO}/pulls/${PULL}`);
@@ -796,8 +696,6 @@ try {
     raced.code === 'HEAD_CHANGED' && stillOpen.data?.merged === false,
     String(raced.code),
   );
-
-  ok('forgejo settles mergeability in the background', await settle(PULL));
 
   // ...and must go through when the head is the one we proved.
   const merge = await mergeWhenReady(PULL, 'squash', prView.head_sha);
@@ -809,7 +707,7 @@ try {
   );
   ok(
     'pr merged proves the merge independently',
-    Boolean(cli(['pr', 'merged', '--repo', REPO, String(PULL)]).proof),
+    Boolean(repoCli(['pr', 'merged', String(PULL)]).proof),
   );
 
   // ---- the merge methods other than squash ---------------------------------
@@ -818,11 +716,9 @@ try {
   for (const method of ['merge', 'rebase']) {
     const branch = `${BRANCH}-${method}`;
     await probeBranch(branch);
-    const opened = cli([
+    const opened = repoCli([
       'pr',
       'create',
-      '--repo',
-      REPO,
       '--head',
       branch,
       '--base',
@@ -851,8 +747,6 @@ try {
   const openArgs = [
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     reconcileBranch,
     '--base',
@@ -860,20 +754,20 @@ try {
     '--body',
     'reconcile probe',
   ];
-  const firstOpen = cli([...openArgs, '--title', 'live: reconcile']);
+  const firstOpen = repoCli([...openArgs, '--title', 'live: reconcile']);
   created.pulls.push(firstOpen.pull_request.number);
   ok(
     'pr create opens a new pull request',
     firstOpen.created === true && firstOpen.updated === false,
   );
-  const repeated = cli([...openArgs, '--title', 'live: reconcile']);
+  const repeated = repoCli([...openArgs, '--title', 'live: reconcile']);
   ok(
     'pr create against the desired state is exit 0 and mutation-free',
     repeated.created === false &&
       repeated.updated === false &&
       repeated.pull_request.number === firstOpen.pull_request.number,
   );
-  const retitled = cli([...openArgs, '--title', 'live: reconcile (moved)']);
+  const retitled = repoCli([...openArgs, '--title', 'live: reconcile (moved)']);
   ok(
     'pr create reconciles a differing title onto the existing pull request',
     retitled.created === false &&
@@ -899,11 +793,9 @@ try {
     );
   }
   created.pulls.push(outOfBand.data.number);
-  const adopted = cli([
+  const adopted = repoCli([
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     adoptBranch,
     '--base',
@@ -972,11 +864,9 @@ try {
     `status=${protection.status}`,
   );
   await probeBranch(protHead, protBase);
-  const protPull = cli([
+  const protPull = repoCli([
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     protHead,
     '--base',
@@ -987,8 +877,7 @@ try {
   const protNumber = protPull.pull_request.number;
   const protSha = protPull.pull_request.head_sha;
   created.pulls.push(protNumber);
-  const protChecks = () =>
-    cli(['pr', 'checks', '--repo', REPO, String(protNumber)]).checks;
+  const protChecks = () => repoCli(['pr', 'checks', String(protNumber)]).checks;
 
   const missing = protChecks();
   ok(
@@ -1036,11 +925,9 @@ try {
 
   // ---- label reconcile, collisions and archived state ----------------------
   const reconcileLabel = 'live-reconcile';
-  const madeLabel = cli([
+  const madeLabel = repoCli([
     'label',
     'create',
-    '--repo',
-    REPO,
     reconcileLabel,
     '--color',
     '#ededed',
@@ -1049,11 +936,9 @@ try {
   ]);
   if (madeLabel.created === true) created.labels.push(reconcileLabel);
   ok('label create opens a new label', madeLabel.created === true);
-  const sameLabel = cli([
+  const sameLabel = repoCli([
     'label',
     'create',
-    '--repo',
-    REPO,
     reconcileLabel,
     '--color',
     '#ededed',
@@ -1064,11 +949,9 @@ try {
     'label create against the desired state is exit 0 and mutation-free',
     sameLabel.created === false && sameLabel.updated === false,
   );
-  const recolored = cli([
+  const recolored = repoCli([
     'label',
     'create',
-    '--repo',
-    REPO,
     reconcileLabel,
     '--color',
     '#00aabb',
@@ -1080,8 +963,8 @@ try {
       recolored.label.color === '#00aabb',
     `color=${recolored.label?.color}`,
   );
-  const collided = cli(
-    ['label', 'edit', '--repo', REPO, reconcileLabel, '--name', 'live-bug'],
+  const collided = repoCli(
+    ['label', 'edit', reconcileLabel, '--name', 'live-bug'],
     { allowFail: true },
   );
   ok(
@@ -1103,8 +986,8 @@ try {
       created.labelIds.push(made.data.id);
     }
   }
-  const ambiguous = cli(
-    ['label', 'edit', '--repo', REPO, 'live-duplicate', '--description', 'x'],
+  const ambiguous = repoCli(
+    ['label', 'edit', 'live-duplicate', '--description', 'x'],
     { allowFail: true },
   );
   ok(
@@ -1128,11 +1011,9 @@ try {
   await raw('PATCH', `repos/${REPO}/labels/${archived.data.id}`, {
     is_archived: true,
   });
-  const editedArchived = cli([
+  const editedArchived = repoCli([
     'label',
     'edit',
-    '--repo',
-    REPO,
     'live-archived',
     '--description',
     'still archived',
@@ -1209,7 +1090,7 @@ try {
   }
   for (const name of created.labels) {
     try {
-      cli(['label', 'delete', '--repo', REPO, name]);
+      repoCli(['label', 'delete', name]);
     } catch {
       /* best effort */
     }
