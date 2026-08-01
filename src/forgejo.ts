@@ -2,6 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { minimatch } from 'minimatch';
 import { appendPath, type ConnectionConfig } from './config.js';
+import { positiveInteger } from './args.js';
 import { ForgejoAxiError, usageError } from './errors.js';
 import {
   ForgejoHttpClient,
@@ -1306,23 +1307,15 @@ export function parseRepository(raw: string): RepositoryRef {
 }
 
 export function parsePullNumber(raw: string): number {
-  return parseNumber(raw, 'Pull request number');
+  return positiveInteger(raw, 'Pull request number');
 }
 
 export function parseIssueNumber(raw: string): number {
-  return parseNumber(raw, 'Issue number');
+  return positiveInteger(raw, 'Issue number');
 }
 
 export function parseRunId(raw: string): number {
-  return parseNumber(raw, 'Run id');
-}
-
-function parseNumber(raw: string, label: string): number {
-  if (!/^[1-9]\d*$/.test(raw))
-    throw usageError(`${label} must be a positive integer`);
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) throw usageError(`${label} is too large`);
-  return value;
+  return positiveInteger(raw, 'Run id');
 }
 
 export function pageInfo<T>(page: Paginated<T>, displayed: number): PageInfo {

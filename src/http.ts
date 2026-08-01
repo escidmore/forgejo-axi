@@ -2,6 +2,7 @@ import http, { type IncomingHttpHeaders } from 'node:http';
 import https from 'node:https';
 import { appendPath, type ConnectionConfig } from './config.js';
 import { ForgejoAxiError } from './errors.js';
+import { VERSION } from './version.js';
 
 export interface HttpResponse<T> {
   status: number;
@@ -80,16 +81,9 @@ export class ForgejoHttpClient {
       items.push(...response.data);
       const linkHasNext = hasNextLink(response.headers['link']);
       const doneByTotal = total !== null && items.length >= total;
+      // An empty page is also a short page, so this covers both stop signals.
       const doneByShortPage = response.data.length < PAGE_SIZE;
       if (doneByTotal || (!linkHasNext && doneByShortPage)) {
-        return {
-          items,
-          complete: true,
-          pages: page,
-          total: total ?? items.length,
-        };
-      }
-      if (!linkHasNext && response.data.length === 0) {
         return {
           items,
           complete: true,
@@ -187,7 +181,12 @@ export class ForgejoHttpClient {
       throw new ForgejoAxiError(
         'Refusing cross-origin redirect',
         'CROSS_ORIGIN_REDIRECT',
-        { details: { from: safeUrl(url), to: safeUrl(target) } },
+        {
+          details: {
+            from: `${url.origin}${url.pathname}`,
+            to: `${target.origin}${target.pathname}`,
+          },
+        },
       );
     }
     if (
@@ -221,7 +220,7 @@ export class ForgejoHttpClient {
   ): Promise<HttpResponse<unknown>> {
     const headers: Record<string, string | number> = {
       accept: accept ?? 'application/json',
-      'user-agent': 'forgejo-axi/0.1.0',
+      'user-agent': `forgejo-axi/${VERSION}`,
     };
     if (this.config.token)
       headers['authorization'] = `token ${this.config.token}`;
@@ -446,8 +445,4 @@ function resolveRedirectTarget(location: string, current: URL): URL {
 
 export function requestHostname(hostname: string): string {
   return hostname.replace(/^\[|\]$/g, '');
-}
-
-function safeUrl(url: URL): string {
-  return `${url.protocol}//${url.host}${url.pathname}`;
 }

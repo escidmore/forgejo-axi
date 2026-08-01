@@ -37,7 +37,6 @@ export function asForgejoError(error: unknown): ForgejoAxiError {
   if (error instanceof AxiError) {
     return new ForgejoAxiError(error.message, error.code, {
       suggestions: error.suggestions,
-      usage: error.code === 'VALIDATION_ERROR',
     });
   }
   return new ForgejoAxiError(

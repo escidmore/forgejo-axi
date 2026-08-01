@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
+import { positiveInteger } from './args.js';
 import { usageError, ForgejoAxiError } from './errors.js';
 
 export interface ConnectionInput {
@@ -37,7 +38,7 @@ export async function resolveConnection(
   }
   const source = input.baseUrl ? 'flag' : 'env';
   const baseUrl = canonicalizeBaseUrl(rawBase);
-  const timeoutMs = parsePositiveInteger(
+  const timeoutMs = positiveInteger(
     input.timeoutMs ?? env['FORGEJO_TIMEOUT_MS'] ?? String(DEFAULT_TIMEOUT_MS),
     '--timeout-ms',
   );
@@ -188,14 +189,6 @@ function resolveToken(
     if (value) return { token: value, source: name };
   }
   return { source: null };
-}
-
-function parsePositiveInteger(raw: string, label: string): number {
-  if (!/^[1-9]\d*$/.test(raw))
-    throw usageError(`${label} must be a positive integer`);
-  const value = Number(raw);
-  if (!Number.isSafeInteger(value)) throw usageError(`${label} is too large`);
-  return value;
 }
 
 function isLoopbackHostname(hostname: string): boolean {

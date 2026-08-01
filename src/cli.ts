@@ -1,7 +1,9 @@
 import { encode } from '@toon-format/toon';
+import { exitCodeForError, runAxiCli } from 'axi-sdk-js';
 import {
   boolFlag,
   parseArgs,
+  positiveInteger,
   rejectPositionals,
   requireFlag,
   requireOnePositional,
@@ -26,6 +28,7 @@ import {
   type RepositoryRef,
   type RunIdentity,
 } from './forgejo.js';
+import { VERSION } from './version.js';
 
 export interface MainOptions {
   argv?: string[];
@@ -33,7 +36,6 @@ export interface MainOptions {
   stdout?: Pick<NodeJS.WriteStream, 'write'>;
 }
 
-const VERSION = '0.1.0';
 const DESCRIPTION =
   'Inspect and manage Forgejo pull request and issue workflows';
 const CONNECTION_FLAGS: FlagSpec = {
@@ -176,25 +178,10 @@ export async function main(options: MainOptions = {}): Promise<void> {
   const env = options.env ?? process.env;
   const stdout = options.stdout ?? process.stdout;
   const json = argv.includes('--json');
-  try {
-    if (argv.length === 1 && argv[0] === '--help') {
-      stdout.write(TOP_HELP);
-      return;
-    }
-    if (
-      argv.length === 1 &&
-      ['--version', '-v', '-V'].includes(argv[0] ?? '')
-    ) {
-      stdout.write(`${VERSION}\n`);
-      return;
-    }
-    const output = await dispatch(argv, env);
-    stdout.write(`${render(output, json)}\n`);
-  } catch (error) {
-    if (error instanceof HelpSignal) {
-      stdout.write(error.output);
-      return;
-    }
+
+  const formatError = (
+    error: unknown,
+  ): { output: string; exitCode: number } => {
     const normalized = asForgejoError(error);
     const output: Record<string, unknown> = {
       error: normalized.message,
@@ -202,64 +189,111 @@ export async function main(options: MainOptions = {}): Promise<void> {
       details: normalized.details,
       help: normalized.suggestions,
     };
-    stdout.write(`${render(output, json)}\n`);
-    process.exitCode = normalized.usage ? 2 : 1;
+    return {
+      output: `${render(output, json)}\n`,
+      exitCode: normalized.usage ? 2 : exitCodeForError(normalized),
+    };
+  };
+
+  // The SDK's own leading-flag rejection bypasses formatError, losing the
+  // contract's error shape and --json rendering, so this check stays local.
+  const first = argv[0];
+  const soleVersionOrHelp =
+    argv.length === 1 &&
+    ['--help', '--version', '-v', '-V'].includes(first ?? '');
+  if (first !== undefined && first.startsWith('-') && !soleVersionOrHelp) {
+    const formatted = formatError(
+      usageError('Flags must come after a command', [
+        'Run `forgejo-axi --help`',
+      ]),
+    );
+    stdout.write(formatted.output);
+    process.exitCode = formatted.exitCode;
+    return;
   }
+
+  const command =
+    (
+      run: (
+        args: string[],
+        env: NodeJS.ProcessEnv,
+      ) => Promise<Record<string, unknown> | string>,
+    ) =>
+    async (args: string[]): Promise<string> => {
+      const output = await run(args, env);
+      return typeof output === 'string' ? output : render(output, json);
+    };
+
+  await runAxiCli({
+    description: DESCRIPTION,
+    version: VERSION,
+    argv,
+    topLevelHelp: TOP_HELP,
+    stdout,
+    home: () => homeOutput(env),
+    commands: {
+      status: command(runStatus),
+      repo: command(runRepo),
+      api: command(runApi),
+      pr: command(runPull),
+      label: command(runLabel),
+      issue: command(runIssue),
+      run: command(runRun),
+      // Shadowing the SDK built-in keeps `update` an unknown command until
+      // the package is actually published.
+      update: () => {
+        throw usageError('Unknown command: update', [
+          'Run `forgejo-axi --help`',
+        ]);
+      },
+    },
+    getCommandHelp: (name) => COMMAND_HELP[name],
+    renderUnknownCommand: (name) =>
+      formatError(
+        usageError(`Unknown command: ${name}`, ['Run `forgejo-axi --help`']),
+      ).output,
+    formatError,
+  });
 }
 
-async function dispatch(
-  argv: string[],
+/**
+ * Commands whose full help the SDK serves on `--help`; the pr/label/issue
+ * families resolve subcommand help inside their handlers instead.
+ */
+const COMMAND_HELP: Record<string, string | undefined> = {
+  status: HELP['status'],
+  api: HELP['api'],
+  repo: HELP['repo view'],
+};
+
+async function homeOutput(
   env: NodeJS.ProcessEnv,
 ): Promise<Record<string, unknown>> {
-  if (argv.length === 0) {
-    const home = {
-      bin: collapsedExecutable(),
-      description: DESCRIPTION,
-    };
-    if (!env['FORGEJO_BASE_URL']) {
-      return {
-        ...home,
-        configured: false,
-        next: [
-          'Set FORGEJO_BASE_URL and a host-scoped FORGEJO_TOKEN_<HOST_KEY>',
-          'forgejo-axi status --base-url https://forgejo.example',
-          'forgejo-axi --help',
-        ],
-      };
-    }
-    const service = new ForgejoService(await resolveConnection({}, env));
+  if (!env['FORGEJO_BASE_URL']) {
     return {
-      ...home,
-      configured: true,
-      ...(await service.status()),
+      configured: false,
       next: [
-        'forgejo-axi repo view --repo OWNER/REPO',
-        'forgejo-axi pr list --repo OWNER/REPO',
+        'Set FORGEJO_BASE_URL and a host-scoped FORGEJO_TOKEN_<HOST_KEY>',
+        'forgejo-axi status --base-url https://forgejo.example',
+        'forgejo-axi --help',
       ],
     };
   }
-  const command = argv[0];
-  const rest = argv.slice(1);
-  if (!command || command.startsWith('-')) {
-    throw usageError('Flags must come after a command', [
-      'Run `forgejo-axi --help`',
-    ]);
-  }
-  if (command === 'status') return runStatus(rest, env);
-  if (command === 'repo') return runRepo(rest, env);
-  if (command === 'api') return runApi(rest, env);
-  if (command === 'pr') return runPull(rest, env);
-  if (command === 'label') return runLabel(rest, env);
-  if (command === 'issue') return runIssue(rest, env);
-  if (command === 'run') return runRun(rest, env);
-  throw usageError(`Unknown command: ${command}`, ['Run `forgejo-axi --help`']);
+  const service = new ForgejoService(await resolveConnection({}, env));
+  return {
+    configured: true,
+    ...(await service.status()),
+    next: [
+      'forgejo-axi repo view --repo OWNER/REPO',
+      'forgejo-axi pr list --repo OWNER/REPO',
+    ],
+  };
 }
 
 async function runStatus(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<Record<string, unknown>> {
-  if (args.includes('--help')) return helpResult('status');
   const parsed = parseArgs(args, CONNECTION_FLAGS, 'status');
   rejectPositionals(parsed);
   return serviceFor(parsed, env).then((service) => service.status());
@@ -271,13 +305,11 @@ async function runRepo(
 ): Promise<Record<string, unknown>> {
   const subcommand = args[0];
   if (subcommand !== 'view') {
-    if (subcommand === '--help') return helpResult('repo view');
     throw usageError(`Unknown repo command: ${subcommand ?? '(missing)'}`, [
       'Run `forgejo-axi repo view --help`',
     ]);
   }
   const rest = args.slice(1);
-  if (rest.includes('--help')) return helpResult('repo view');
   const parsed = parseArgs(rest, withFlags({ '--repo': 'value' }), 'repo view');
   rejectPositionals(parsed);
   const repo = resolveRepo(parsed, env);
@@ -289,7 +321,6 @@ async function runApi(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<Record<string, unknown>> {
-  if (args.includes('--help')) return helpResult('api');
   const parsed = parseArgs(
     args,
     withFlags({
@@ -336,9 +367,9 @@ async function runApi(
 async function runPull(
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | string> {
   const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpResult('pr');
+  if (!subcommand || subcommand === '--help') return helpText('pr');
   const key = `pr ${subcommand}`;
   if (!Object.hasOwn(HELP, key)) {
     throw usageError(`Unknown pr command: ${subcommand}`, [
@@ -346,7 +377,7 @@ async function runPull(
     ]);
   }
   const rest = args.slice(1);
-  if (rest.includes('--help')) return helpResult(key);
+  if (rest.includes('--help')) return helpText(key);
   switch (subcommand) {
     case 'find':
       return pullFind(rest, env);
@@ -562,9 +593,9 @@ async function pullMerge(
 async function runLabel(
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | string> {
   const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpResult('label');
+  if (!subcommand || subcommand === '--help') return helpText('label');
   const key = `label ${subcommand}`;
   if (!Object.hasOwn(HELP, key)) {
     throw usageError(`Unknown label command: ${subcommand}`, [
@@ -572,7 +603,7 @@ async function runLabel(
     ]);
   }
   const rest = args.slice(1);
-  if (rest.includes('--help')) return helpResult(key);
+  if (rest.includes('--help')) return helpText(key);
   switch (subcommand) {
     case 'list':
       return labelList(rest, env);
@@ -691,9 +722,9 @@ function labelInput(parsed: ParsedArgs): LabelInput {
 async function runIssue(
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | string> {
   const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpResult('issue');
+  if (!subcommand || subcommand === '--help') return helpText('issue');
   const key = `issue ${subcommand}`;
   if (!Object.hasOwn(HELP, key)) {
     throw usageError(`Unknown issue command: ${subcommand}`, [
@@ -701,7 +732,7 @@ async function runIssue(
     ]);
   }
   const rest = args.slice(1);
-  if (rest.includes('--help')) return helpResult(key);
+  if (rest.includes('--help')) return helpText(key);
   switch (subcommand) {
     case 'list':
       return issueList(rest, env);
@@ -910,9 +941,9 @@ function commaList(raw: string): string[] {
 async function runRun(
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<Record<string, unknown>> {
+): Promise<Record<string, unknown> | string> {
   const subcommand = args[0];
-  if (!subcommand || subcommand === '--help') return helpResult('run');
+  if (!subcommand || subcommand === '--help') return helpText('run');
   const key = `run ${subcommand}`;
   if (!Object.hasOwn(HELP, key)) {
     throw usageError(`Unknown run command: ${subcommand}`, [
@@ -920,7 +951,7 @@ async function runRun(
     ]);
   }
   const rest = args.slice(1);
-  if (rest.includes('--help')) return helpResult(key);
+  if (rest.includes('--help')) return helpText(key);
   switch (subcommand) {
     case 'list':
       return runList(rest, env);
@@ -1116,14 +1147,6 @@ function stateFlag(value: string, allowAll: boolean): string {
   return value;
 }
 
-function positiveInteger(value: string, label: string): number {
-  if (!/^[1-9]\d*$/.test(value))
-    throw usageError(`${label} must be a positive integer`);
-  const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed)) throw usageError(`${label} is too large`);
-  return parsed;
-}
-
 const PULL_IDENTITY_FIELDS: ReadonlyArray<keyof PullRequestIdentity> = [
   'number',
   'url',
@@ -1270,24 +1293,14 @@ function parseJson(value: string): unknown {
   }
 }
 
-function helpResult(key: string): never {
-  throw new HelpSignal(FAMILY_HELP[key] ?? HELP[key] ?? TOP_HELP);
-}
-
-class HelpSignal extends Error {
-  constructor(readonly output: string) {
-    super('help');
-  }
+/**
+ * runAxiCli appends a newline to command output, so help is served without
+ * its own trailing one.
+ */
+function helpText(key: string): string {
+  return (FAMILY_HELP[key] ?? HELP[key] ?? TOP_HELP).replace(/\n$/, '');
 }
 
 function render(output: Record<string, unknown>, json: boolean): string {
   return json ? JSON.stringify(output) : encode(output);
-}
-
-function collapsedExecutable(): string {
-  const executable = process.argv[1] ?? 'forgejo-axi';
-  const home = process.env['HOME'];
-  return home && executable.startsWith(home)
-    ? `~${executable.slice(home.length)}`
-    : executable;
 }

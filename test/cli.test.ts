@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
@@ -31,6 +32,15 @@ describe('CLI contract', () => {
     expect(result.output).toContain('configured: false');
     expect(result.output).toContain('FORGEJO_BASE_URL');
     expect(result.output).not.toContain('error:');
+  });
+
+  it('reports the package.json version for --version', async () => {
+    const packageJson = JSON.parse(
+      await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+    ) as { version: string };
+    const result = await invoke(['--version']);
+    expect(result.exitCode).toBeUndefined();
+    expect(result.output).toBe(`${packageJson.version}\n`);
   });
 
   it('rejects unknown input with a structured usage error', async () => {
