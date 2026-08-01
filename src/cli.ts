@@ -124,8 +124,12 @@ Commands:
   cancel    Cancel a pending or running run
   download  Download a run's artifacts to a directory
 
-Every run command reports {supported: false, capability: 'runs'} instead of
-running when the connected Forgejo does not advertise the Actions runs API.
+Capabilities are probed per route. A host without the Actions runs API turns
+every command into {supported: false, capability: 'runs'}; cancel and download
+likewise refuse with 'run_cancel' and 'run_artifacts' when only their routes
+are missing (Forgejo 15.0.5 lists runs but has neither). view degrades
+instead: without the jobs route it returns the run with no jobs and says so
+in next.
 
 Run \`forgejo-axi run <command> --help\` for flags and examples.
 `;
@@ -999,14 +1003,16 @@ async function runView(
   const requested = wantLog ? 'all' : wantLogFailed ? 'failed' : 'none';
   const log =
     requested !== 'none' && !capabilities.job_logs ? 'none' : requested;
-  const result = await service.viewRun(repo, runId, log);
-  const skippedLog = requested !== 'none' && log === 'none';
-  return {
-    ...result,
-    ...(skippedLog
-      ? { next: ['Job logs are unsupported on this Forgejo host'] }
-      : {}),
-  };
+  const result = await service.viewRun(repo, runId, log, capabilities.run_jobs);
+  const next = [
+    ...(capabilities.run_jobs
+      ? []
+      : ['Run jobs are unsupported on this Forgejo host']),
+    ...(capabilities.run_jobs && requested !== 'none' && log === 'none'
+      ? ['Job logs are unsupported on this Forgejo host']
+      : []),
+  ];
+  return { ...result, ...(next.length > 0 ? { next } : {}) };
 }
 
 async function runCancel(
@@ -1021,7 +1027,9 @@ async function runCancel(
   const runId = parseRunId(requireOnePositional(parsed, 'run id'));
   const repo = resolveRepo(parsed, env);
   const service = await serviceFor(parsed, env);
-  if (!(await service.runCapabilities()).runs) return unsupportedResult('runs');
+  const capabilities = await service.runCapabilities();
+  if (!capabilities.runs) return unsupportedResult('runs');
+  if (!capabilities.run_cancel) return unsupportedResult('run_cancel');
   return service.cancelRun(repo, runId);
 }
 
@@ -1039,7 +1047,9 @@ async function runDownload(
   const dir = requireFlag(parsed, '--dir');
   const name = stringFlag(parsed, '--name');
   const service = await serviceFor(parsed, env);
-  if (!(await service.runCapabilities()).runs) return unsupportedResult('runs');
+  const capabilities = await service.runCapabilities();
+  if (!capabilities.runs) return unsupportedResult('runs');
+  if (!capabilities.run_artifacts) return unsupportedResult('run_artifacts');
   return service.downloadRunArtifacts(repo, runId, name, dir);
 }
 

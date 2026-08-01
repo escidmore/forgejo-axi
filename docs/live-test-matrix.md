@@ -19,6 +19,8 @@ A captain-approved run against a disposable test repository on both lane hosts c
 
 `pr merge --expected-head` with a stale head was refused with `HEAD_CHANGED` on both hosts, and the pull request was still unmerged afterwards — the race guard proven against real servers rather than a fake one.
 
+The first run-family lane run corrected a fixture in both directions: real 15.0.5 advertises `/actions/runs` and `/actions/runs/{run_id}` — the fixtures had claimed it carried no Actions routes at all — while lacking the jobs, cancel, artifacts, and logs subroutes that 16.0.1 has. That split is why the CLI probes run capabilities per route rather than as one flag.
+
 The `state`, `label`, `assignee`, and `milestone` filters each demonstrably narrowed the returned set — the assertion that matters, because Forgejo answers an unrecognised filter with an unfiltered list rather than an error. `issue comment` against a real pull request number landed in that pull request's discussion, with Forgejo setting `pull_request_url` on the resulting comment.
 
 Both runs deleted every issue, pull request, branch, label, and milestone they created, and both repositories were verified empty afterwards. Note that `status` reports `authenticated: false` for a token lacking `read:user` even when that token is fully able to perform repository and issue work; the auth probe reflects one scope, not overall usability.

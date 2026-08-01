@@ -7,7 +7,11 @@
       "/repos/{owner}/{repo}/statuses/{sha}": {},
       "/repos/{owner}/{repo}/branches/{branch}": {},
       "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs": {},
-      "/repos/{owner}/{repo}/actions/runs": {}
+      "/repos/{owner}/{repo}/actions/runs": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/cancel": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts": {}
     },
     "definitions": {
       "MergePullRequestOption": {

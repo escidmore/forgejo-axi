@@ -80,7 +80,7 @@ Paginated responses include `page_info: {complete, pages, fetched, total, displa
 
 Additive fields are permitted. Nullable fields are emitted as `null`, not omitted, when listed below.
 
-- `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,runs,probe:{source,complete}}}`.
+- `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,runs,run_jobs,run_cancel,run_artifacts,probe:{source,complete}}}`.
 - `repo view`: `{repository:{full_name,url,api_url,description,private,archived,default_branch,has_actions,has_pull_requests,open_pull_requests}}`.
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
@@ -134,7 +134,7 @@ Assignee usernames are not resolved before mutation the way label and milestone 
 
 A run identity is `{id, url, api_url, title, event, branch, head_sha, run_number, status, started_at, completed_at}`. `url` and `api_url` are constructed from the configured canonical base URL and repository identity, not trusted response links. `branch` is the short name of the git ref the run was triggered from and `status` is the run state Forgejo reports, defaulting to `unknown`; `started_at` and `completed_at` are `null` while unset. A job identity is `{id, run_id, name, status}`, plus `log` when a log was requested and folded in.
 
-`run list --status` accepts `unknown`, `waiting`, `running`, `success`, `failure`, `cancelled`, `skipped`, or `blocked`, validated before any request; `--branch` filters on the branch the run was triggered from. `run view --log` folds every job's log into its job entry and `--log-failed` folds only failed jobs' logs; the two cannot be combined. When job logs are requested but the host does not advertise the log route, the logs are omitted and `next` says so — an unsupported log is never an error and never alters the rest of the response.
+`run list --status` accepts `unknown`, `waiting`, `running`, `success`, `failure`, `cancelled`, `skipped`, or `blocked`, validated before any request; `--branch` filters on the branch the run was triggered from. `run view --log` folds every job's log into its job entry and `--log-failed` folds only failed jobs' logs; the two cannot be combined. When job logs are requested but the host does not advertise the log route, the logs are omitted and `next` says so — an unsupported log is never an error and never alters the rest of the response. Capabilities are probed per route: a host that lists runs without the jobs route (Forgejo 15.0.5 does) gets `run view` with `jobs: []` and `next` saying so, while `run cancel` and `run download` report `{supported: false}` with capabilities `run_cancel` and `run_artifacts` when their routes are missing.
 
 `run cancel` reports `cancelled=true` only when the run was still actionable beforehand; cancelling an already finished run is exit `0`, `cancelled=false`, and returns the run unchanged.
 

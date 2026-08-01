@@ -910,10 +910,19 @@ export class ForgejoService {
   }
 
   /** Probed once per invocation; the CLI seam decides whether to render Unsupported. */
-  async runCapabilities(): Promise<{ runs: boolean; job_logs: boolean }> {
+  async runCapabilities(): Promise<{
+    runs: boolean;
+    run_jobs: boolean;
+    run_cancel: boolean;
+    run_artifacts: boolean;
+    job_logs: boolean;
+  }> {
     const capabilities = await this.probeCapabilities();
     return {
       runs: Boolean(capabilities['runs']),
+      run_jobs: Boolean(capabilities['run_jobs']),
+      run_cancel: Boolean(capabilities['run_cancel']),
+      run_artifacts: Boolean(capabilities['run_artifacts']),
       job_logs: Boolean(capabilities['actions_job_logs']),
     };
   }
@@ -943,12 +952,14 @@ export class ForgejoService {
     repo: RepositoryRef,
     runId: number,
     log: 'none' | 'all' | 'failed',
+    includeJobs: boolean,
   ): Promise<{ run: RunIdentity; jobs: JobIdentity[] }> {
     const run = normalizeRun(
       this.config,
       repo,
       await this.getRunRaw(repo, runId),
     );
+    if (!includeJobs) return { run, jobs: [] };
     const jobsResponse = await this.http.api<ApiActionRunJob[]>({
       path: `${repoPath(repo)}/actions/runs/${runId}/jobs`,
     });
@@ -1268,6 +1279,11 @@ export class ForgejoService {
         '/repos/{owner}/{repo}/actions/jobs/{job_id}/logs',
       ),
       runs: hasPath('/repos/{owner}/{repo}/actions/runs'),
+      run_jobs: hasPath('/repos/{owner}/{repo}/actions/runs/{run_id}/jobs'),
+      run_cancel: hasPath('/repos/{owner}/{repo}/actions/runs/{run_id}/cancel'),
+      run_artifacts: hasPath(
+        '/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts',
+      ),
     };
     return capabilityObject(capabilities, 'swagger', true);
   }
@@ -1817,6 +1833,9 @@ interface ProbedCapabilities {
   expected_head_merge?: boolean;
   actions_job_logs?: boolean;
   runs?: boolean;
+  run_jobs?: boolean;
+  run_cancel?: boolean;
+  run_artifacts?: boolean;
 }
 
 function capabilityObject(
@@ -1831,6 +1850,9 @@ function capabilityObject(
     expected_head_merge: capabilities.expected_head_merge ?? false,
     actions_job_logs: capabilities.actions_job_logs ?? false,
     runs: capabilities.runs ?? false,
+    run_jobs: capabilities.run_jobs ?? false,
+    run_cancel: capabilities.run_cancel ?? false,
+    run_artifacts: capabilities.run_artifacts ?? false,
     probe: { source, complete },
   };
 }

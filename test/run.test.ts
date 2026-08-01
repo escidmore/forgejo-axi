@@ -117,10 +117,20 @@ async function runServer(world: RunWorld): Promise<FakeServer> {
 
 /** Answers the capability probe only; every Actions request is a test failure. */
 async function unsupportedServer(): Promise<FakeServer> {
-  const fixture = await load<{ swagger: Record<string, unknown> }>(15);
+  const fixture = await load<{
+    swagger: { paths: Record<string, unknown> };
+  }>(15);
+  // Real 15.0.5 advertises the runs routes, so a host without any Actions API
+  // has to be constructed by stripping them.
+  const paths = Object.fromEntries(
+    Object.entries(fixture.swagger.paths).filter(
+      ([path]) => !path.includes('/actions/'),
+    ),
+  );
+  const swagger = { ...fixture.swagger, paths };
   const server = await startServer((_request, response, recorded) => {
     if (recorded.url === '/swagger.v1.json')
-      return json(response, 200, fixture.swagger);
+      return json(response, 200, swagger);
     return json(response, 500, {
       message: 'the run family must not reach an unsupported host',
     });
@@ -140,7 +150,7 @@ function connection(server: FakeServer, json = true): string[] {
 }
 
 describe('run command family', () => {
-  it('reports every subcommand unsupported on Forgejo 15 without an Actions request', async () => {
+  it('reports every subcommand unsupported when the host lacks the runs route', async () => {
     const server = await unsupportedServer();
     const invocations: string[][] = [
       ['run', 'list'],
@@ -162,6 +172,57 @@ describe('run command family', () => {
       server.requests.map((request) => request.url),
       'only the capability probe should have been requested',
     ).toEqual(invocations.map(() => '/swagger.v1.json'));
+  });
+
+  it('follows the per-route capabilities Forgejo 15 really advertises', async () => {
+    // Real 15.0.5 lists /actions/runs and /actions/runs/{run_id} but not the
+    // jobs, cancel, or artifacts subroutes — proven by the live lane.
+    const fifteen = await load<RunWorld>(15);
+    const world = { ...(await load<RunWorld>(16)), swagger: fifteen.swagger };
+    const server = await runServer(world);
+
+    const listed = await invoke(['run', 'list', ...connection(server)]);
+    expect(listed.exitCode).toBeUndefined();
+    expect(parseJson<{ runs: unknown[] }>(listed.output).runs).toHaveLength(1);
+
+    const viewed = await invoke(['run', 'view', ...connection(server), '9']);
+    expect(viewed.exitCode).toBeUndefined();
+    expect(parseJson(viewed.output)).toMatchObject({
+      run: { id: 9 },
+      jobs: [],
+      next: ['Run jobs are unsupported on this Forgejo host'],
+    });
+
+    const cancelled = await invoke([
+      'run',
+      'cancel',
+      ...connection(server),
+      '9',
+    ]);
+    expect(cancelled.exitCode).toBeUndefined();
+    expect(parseJson(cancelled.output)).toMatchObject({
+      supported: false,
+      capability: 'run_cancel',
+    });
+
+    const downloaded = await invoke([
+      'run',
+      'download',
+      ...connection(server),
+      '9',
+      '--dir',
+      join(tmpdir(), 'forgejo-axi-unused'),
+    ]);
+    expect(downloaded.exitCode).toBeUndefined();
+    expect(parseJson(downloaded.output)).toMatchObject({
+      supported: false,
+      capability: 'run_artifacts',
+    });
+
+    const touched = server.requests.map((request) => request.url);
+    expect(touched.some((url) => url.includes('/jobs'))).toBe(false);
+    expect(touched.some((url) => url.includes('/cancel'))).toBe(false);
+    expect(touched.some((url) => url.includes('/artifacts'))).toBe(false);
   });
 
   it('lists Forgejo 16 runs in TOON and JSON and honours --fields', async () => {
