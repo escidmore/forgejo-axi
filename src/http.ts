@@ -101,7 +101,7 @@ export class ForgejoHttpClient {
     return { items, complete: false, pages: MAX_PAGES, total };
   }
 
-  /** Like `paginate`, for Forgejo's Actions endpoints that wrap rows as `{entries,total_count}`. */
+  /** Like `paginate`, for `GET /actions/runs`, which wraps rows as `{workflow_runs,total_count}`. */
   async paginateEnvelope<T>(
     path: string,
     query: Record<string, string | number | boolean | undefined> = {},
@@ -109,11 +109,14 @@ export class ForgejoHttpClient {
     const items: T[] = [];
     let total: number | null = null;
     for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await this.api<{ entries?: T[]; total_count?: number }>({
+      const response = await this.api<{
+        workflow_runs?: T[];
+        total_count?: number;
+      }>({
         path,
         query: { ...query, page, limit: PAGE_SIZE },
       });
-      const entries = response.data.entries;
+      const entries = response.data.workflow_runs;
       if (!Array.isArray(entries)) {
         throw new ForgejoAxiError(
           'Forgejo returned a malformed paginated response',
@@ -306,10 +309,11 @@ export class ForgejoHttpClient {
     if (response.status >= 200 && response.status < 300) {
       return response as HttpResponse<T>;
     }
-    const message = redact(
-      raw ? null : responseMessage(response.data),
-      this.config.token,
-    );
+    const body =
+      raw && Buffer.isBuffer(response.data)
+        ? parseErrorBody(response.data)
+        : response.data;
+    const message = redact(responseMessage(body), this.config.token);
     const code = statusCode(response.status, message);
     throw new ForgejoAxiError(
       message
@@ -358,7 +362,16 @@ function responseMessage(data: unknown): string | null {
   return typeof value === 'string' ? value.slice(0, 500) : null;
 }
 
-function redact(
+/** Error bodies are JSON even on raw byte endpoints; an undecodable body yields no message. */
+function parseErrorBody(buffer: Buffer): unknown {
+  try {
+    return JSON.parse(buffer.toString('utf8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+export function redact(
   message: string | null,
   token: string | undefined,
 ): string | null {

@@ -13,13 +13,6 @@ import {
   type FakeServer,
 } from './server.js';
 
-interface Fixture {
-  swagger: Record<string, unknown>;
-  run: Record<string, unknown>;
-  jobs: Array<Record<string, unknown>>;
-  artifacts: Array<Record<string, unknown>>;
-}
-
 interface RunWorld {
   swagger: Record<string, unknown>;
   run: Record<string, unknown>;
@@ -39,20 +32,6 @@ afterEach(async () => {
   );
 });
 
-async function loadFixture(version: 15 | 16): Promise<Fixture> {
-  return load<Fixture>(version);
-}
-
-async function worldFor(version: 15 | 16): Promise<RunWorld> {
-  const fixture = await loadFixture(version);
-  return {
-    swagger: fixture.swagger,
-    run: fixture.run,
-    jobs: fixture.jobs,
-    artifacts: fixture.artifacts,
-  };
-}
-
 async function tempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-run-'));
   tempDirs.push(dir);
@@ -64,8 +43,9 @@ function artifactZip(id: number): Buffer {
   return Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, id]);
 }
 
+/** Carries a secret so redaction is provable when a token is configured. */
 function jobLog(id: number): string {
-  return `job ${id} log`;
+  return `job ${id} log token=super-secret-token`;
 }
 
 async function runServer(world: RunWorld): Promise<FakeServer> {
@@ -84,10 +64,10 @@ async function runServer(world: RunWorld): Promise<FakeServer> {
       const rows = (state.list ?? [state.run]).filter(
         (row) =>
           (status === null || row['status'] === status) &&
-          (ref === null || row['head_branch'] === ref),
+          (ref === null || ref === `refs/heads/${String(row['prettyref'])}`),
       );
       return json(response, 200, {
-        entries: page === 1 ? rows : [],
+        workflow_runs: page === 1 ? rows : [],
         total_count: rows.length,
       });
     }
@@ -99,7 +79,7 @@ async function runServer(world: RunWorld): Promise<FakeServer> {
         state.run = {
           ...state.run,
           status: 'cancelled',
-          completed_at: '2026-01-03T00:06:00Z',
+          stopped: '2026-01-03T00:06:00Z',
         };
       }
       response.statusCode = 204;
@@ -111,10 +91,7 @@ async function runServer(world: RunWorld): Promise<FakeServer> {
       const rows = state.artifacts.filter(
         (artifact) => name === null || artifact['name'] === name,
       );
-      return json(response, 200, {
-        entries: page === 1 ? rows : [],
-        total_count: rows.length,
-      });
+      return json(response, 200, page === 1 ? rows : []);
     }
     if (path === `/actions/runs/${id}`) return json(response, 200, state.run);
 
@@ -140,7 +117,7 @@ async function runServer(world: RunWorld): Promise<FakeServer> {
 
 /** Answers the capability probe only; every Actions request is a test failure. */
 async function unsupportedServer(): Promise<FakeServer> {
-  const fixture = await loadFixture(15);
+  const fixture = await load<{ swagger: Record<string, unknown> }>(15);
   const server = await startServer((_request, response, recorded) => {
     if (recorded.url === '/swagger.v1.json')
       return json(response, 200, fixture.swagger);
@@ -188,7 +165,7 @@ describe('run command family', () => {
   });
 
   it('lists Forgejo 16 runs in TOON and JSON and honours --fields', async () => {
-    const server = await runServer(await worldFor(16));
+    const server = await runServer(await load<RunWorld>(16));
 
     const toon = await invoke(['run', 'list', ...connection(server, false)]);
     expect(toon.exitCode).toBeUndefined();
@@ -221,7 +198,7 @@ describe('run command family', () => {
   });
 
   it('sends the status and branch filters Forgejo understands', async () => {
-    const server = await runServer(await worldFor(16));
+    const server = await runServer(await load<RunWorld>(16));
     const result = await invoke([
       'run',
       'list',
@@ -239,12 +216,12 @@ describe('run command family', () => {
     ).searchParams;
     expect(Object.fromEntries(query)).toMatchObject({
       status: 'success',
-      ref: 'main',
+      ref: 'refs/heads/main',
     });
   });
 
   it('reports an empty run list without an error', async () => {
-    const server = await runServer({ ...(await worldFor(16)), list: [] });
+    const server = await runServer({ ...(await load<RunWorld>(16)), list: [] });
     const result = await invoke(['run', 'list', ...connection(server)]);
     expect(result.exitCode).toBeUndefined();
     expect(parseJson(result.output)).toMatchObject({
@@ -254,7 +231,7 @@ describe('run command family', () => {
   });
 
   it('views a run with its jobs and canonical URLs', async () => {
-    const server = await runServer(await worldFor(16));
+    const server = await runServer(await load<RunWorld>(16));
     const viewed = parseJson<{
       run: Record<string, unknown>;
       jobs: Array<Record<string, unknown>>;
@@ -274,27 +251,13 @@ describe('run command family', () => {
       completed_at: '2026-01-03T00:05:00Z',
     });
     expect(viewed.jobs).toEqual([
-      {
-        id: 21,
-        run_id: 9,
-        name: 'build',
-        status: 'success',
-        started_at: '2026-01-03T00:00:00Z',
-        completed_at: '2026-01-03T00:02:00Z',
-      },
-      {
-        id: 22,
-        run_id: 9,
-        name: 'test',
-        status: 'failure',
-        started_at: '2026-01-03T00:02:00Z',
-        completed_at: '2026-01-03T00:05:00Z',
-      },
+      { id: 21, run_id: 9, name: 'build', status: 'success' },
+      { id: 22, run_id: 9, name: 'test', status: 'failure' },
     ]);
   });
 
   it('folds every job log with --log and only failed logs with --log-failed', async () => {
-    const server = await runServer(await worldFor(16));
+    const server = await runServer(await load<RunWorld>(16));
 
     const all = parseJson<{ jobs: Array<{ log?: string }> }>(
       (await invoke(['run', 'view', ...connection(server), '9', '--log']))
@@ -317,8 +280,56 @@ describe('run command family', () => {
     expect(failed.jobs[1]).toMatchObject({ id: 22, log: jobLog(22) });
   });
 
+  it('redacts a configured token from decoded job logs', async () => {
+    const server = await runServer(await load<RunWorld>(16));
+    const result = await invoke(
+      [
+        'run',
+        'view',
+        ...connection(server),
+        '9',
+        '--log',
+        '--token-env',
+        'TOKEN',
+      ],
+      { TOKEN: 'super-secret-token' },
+    );
+    expect(result.exitCode).toBeUndefined();
+    const viewed = parseJson<{ jobs: Array<{ log?: string }> }>(result.output);
+    expect(viewed.jobs.map((job) => job.log)).toEqual([
+      'job 21 log token=[REDACTED]',
+      'job 22 log token=[REDACTED]',
+    ]);
+    expect(result.output).not.toContain('super-secret-token');
+  });
+
+  it('surfaces the server message when a raw log fetch fails', async () => {
+    const world = await load<RunWorld>(16);
+    const server = await startServer((_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      if (url.pathname === '/swagger.v1.json')
+        return json(response, 200, world.swagger);
+      const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
+      if (path === '/actions/runs/9') return json(response, 200, world.run);
+      if (path === '/actions/runs/9/jobs')
+        return json(response, 200, world.jobs);
+      return json(response, 404, { message: 'job log vanished' });
+    });
+    servers.push(server);
+
+    const result = await invoke([
+      'run',
+      'view',
+      ...connection(server),
+      '9',
+      '--log',
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(result.output).toContain('job log vanished');
+  });
+
   it('omits requested job logs instead of failing when the host lacks the route', async () => {
-    const world = await worldFor(16);
+    const world = await load<RunWorld>(16);
     const paths = { ...(world.swagger['paths'] as Record<string, unknown>) };
     delete paths['/repos/{owner}/{repo}/actions/jobs/{job_id}/logs'];
     const server = await runServer({
@@ -348,10 +359,10 @@ describe('run command family', () => {
   });
 
   it('cancels a running run and reports the repeat as a no-op', async () => {
-    const world = await worldFor(16);
+    const world = await load<RunWorld>(16);
     const server = await runServer({
       ...world,
-      run: { ...world.run, status: 'running', completed_at: null },
+      run: { ...world.run, status: 'running', stopped: '0001-01-01T00:00:00Z' },
     });
     const args = ['run', 'cancel', ...connection(server), '9'];
 
@@ -366,7 +377,7 @@ describe('run command family', () => {
   });
 
   it('downloads artifacts into a created directory and never overwrites one', async () => {
-    const server = await runServer(await worldFor(16));
+    const server = await runServer(await load<RunWorld>(16));
     const dir = join(await tempDir(), 'nested', 'artifacts');
     const args = ['run', 'download', ...connection(server), '9', '--dir', dir];
 
@@ -397,7 +408,7 @@ describe('run command family', () => {
   });
 
   it('narrows the download to a single artifact name', async () => {
-    const server = await runServer(await worldFor(16));
+    const server = await runServer(await load<RunWorld>(16));
     const dir = await tempDir();
 
     const result = parseJson<{ downloaded: Array<Record<string, unknown>> }>(

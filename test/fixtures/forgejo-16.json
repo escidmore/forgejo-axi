@@ -77,30 +77,16 @@
     "id": 9,
     "title": "CI",
     "event": "push",
-    "head_branch": "main",
-    "head_sha": "def456",
-    "run_number": 3,
+    "prettyref": "main",
+    "commit_sha": "def456",
+    "index_in_repo": 3,
     "status": "success",
-    "started_at": "2026-01-03T00:00:00Z",
-    "completed_at": "2026-01-03T00:05:00Z"
+    "started": "2026-01-03T00:00:00Z",
+    "stopped": "2026-01-03T00:05:00Z"
   },
   "jobs": [
-    {
-      "id": 21,
-      "run_id": 9,
-      "name": "build",
-      "status": "success",
-      "started_at": "2026-01-03T00:00:00Z",
-      "completed_at": "2026-01-03T00:02:00Z"
-    },
-    {
-      "id": 22,
-      "run_id": 9,
-      "name": "test",
-      "status": "failure",
-      "started_at": "2026-01-03T00:02:00Z",
-      "completed_at": "2026-01-03T00:05:00Z"
-    }
+    { "id": 21, "run_id": 9, "name": "build", "status": "success" },
+    { "id": 22, "run_id": 9, "name": "test", "status": "failure" }
   ],
   "artifacts": [
     { "id": 31, "name": "coverage", "size_in_bytes": 1024 },

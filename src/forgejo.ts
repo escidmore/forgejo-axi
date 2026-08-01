@@ -5,6 +5,7 @@ import { appendPath, type ConnectionConfig } from './config.js';
 import { ForgejoAxiError, usageError } from './errors.js';
 import {
   ForgejoHttpClient,
+  redact,
   type Paginated,
   type HttpResponse,
 } from './http.js';
@@ -103,12 +104,12 @@ interface ApiActionRun {
   id?: number;
   title?: string;
   event?: string;
-  head_branch?: string;
-  head_sha?: string;
-  run_number?: number;
+  prettyref?: string;
+  commit_sha?: string;
+  index_in_repo?: number;
   status?: string;
-  started_at?: string;
-  completed_at?: string;
+  started?: string;
+  stopped?: string;
 }
 
 interface ApiActionRunJob {
@@ -116,8 +117,6 @@ interface ApiActionRunJob {
   run_id?: number;
   name?: string;
   status?: string;
-  started_at?: string;
-  completed_at?: string;
 }
 
 interface ApiActionArtifact {
@@ -236,8 +235,6 @@ export interface JobIdentity {
   run_id: number;
   name: string;
   status: string;
-  started_at: string | null;
-  completed_at: string | null;
   log?: string | null;
 }
 
@@ -927,7 +924,11 @@ export class ForgejoService {
   ): Promise<Paginated<RunIdentity>> {
     const query: Record<string, string> = {};
     if (filters.status !== undefined) query['status'] = filters.status;
-    if (filters.branch !== undefined) query['ref'] = filters.branch;
+    if (filters.branch !== undefined) {
+      query['ref'] = filters.branch.startsWith('refs/')
+        ? filters.branch
+        : `refs/heads/${filters.branch}`;
+    }
     const page = await this.http.paginateEnvelope<ApiActionRun>(
       `${repoPath(repo)}/actions/runs`,
       query,
@@ -995,7 +996,7 @@ export class ForgejoService {
   ): Promise<{ run_id: number; dir: string; downloaded: ArtifactDownload[] }> {
     const query: Record<string, string> = {};
     if (name !== undefined) query['name'] = name;
-    const page = await this.http.paginateEnvelope<ApiActionArtifact>(
+    const page = await this.http.paginate<ApiActionArtifact>(
       `${repoPath(repo)}/actions/runs/${runId}/artifacts`,
       query,
     );
@@ -1014,6 +1015,7 @@ export class ForgejoService {
     for (const artifact of page.items) {
       const artifactName = requireSafeArtifactName(artifact.name);
       const artifactId = requireArtifactId(artifact.id);
+      // ponytail: whole zip buffered in memory; stream the transport if artifacts outgrow RAM
       const response = await this.http.api<Buffer>({
         path: `${repoPath(repo)}/actions/artifacts/${artifactId}/zip`,
         accept: 'application/octet-stream',
@@ -1057,7 +1059,7 @@ export class ForgejoService {
       accept: 'text/plain',
       raw: true,
     });
-    return response.data.toString('utf8');
+    return redact(response.data.toString('utf8'), this.config.token) ?? '';
   }
 
   private async getIssue(
@@ -1493,13 +1495,19 @@ function normalizeRun(
     api_url: `${canonicalRepoApiUrl(config, repo)}/actions/runs/${id}`,
     title: run.title ?? '',
     event: run.event ?? '',
-    branch: run.head_branch ?? '',
-    head_sha: run.head_sha ?? '',
-    run_number: run.run_number ?? 0,
+    branch: run.prettyref ?? '',
+    head_sha: run.commit_sha ?? '',
+    run_number: run.index_in_repo ?? 0,
     status: run.status ?? 'unknown',
-    started_at: run.started_at ?? null,
-    completed_at: run.completed_at ?? null,
+    started_at: timestampOrNull(run.started),
+    completed_at: timestampOrNull(run.stopped),
   };
+}
+
+/** Forgejo serialises an unset time as Go's zero value rather than omitting it. */
+function timestampOrNull(raw: string | undefined): string | null {
+  if (!raw || raw.startsWith('0001-01-01')) return null;
+  return raw;
 }
 
 function normalizeJob(job: ApiActionRunJob): JobIdentity {
@@ -1514,8 +1522,6 @@ function normalizeJob(job: ApiActionRunJob): JobIdentity {
     run_id: job.run_id ?? 0,
     name: job.name ?? '',
     status: job.status ?? 'unknown',
-    started_at: job.started_at ?? null,
-    completed_at: job.completed_at ?? null,
   };
 }
 
