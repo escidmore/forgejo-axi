@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { resolveConnection } from '../src/config.js';
 import {
@@ -6,26 +5,26 @@ import {
   parseRepository,
   type ChecksResult,
 } from '../src/forgejo.js';
-import { json, startServer, type FakeServer } from './server.js';
+import {
+  closeServers,
+  json,
+  loadFixture,
+  parseJson,
+  servers,
+  startServer,
+  type FakeServer,
+} from './server.js';
 
 interface Fixture {
   pull: Record<string, unknown>;
 }
 
-const servers: FakeServer[] = [];
 const repo = parseRepository('acme/widgets');
 
-afterEach(async () => {
-  await Promise.all(servers.splice(0).map((server) => server.close()));
-});
+afterEach(closeServers);
 
 async function fixture(version: 15 | 16 = 15): Promise<Fixture> {
-  return parseJson<Fixture>(
-    await readFile(
-      new URL(`./fixtures/forgejo-${version}.json`, import.meta.url),
-      'utf8',
-    ),
-  );
+  return loadFixture<Fixture>(version);
 }
 
 async function serviceFor(server: FakeServer): Promise<ForgejoService> {
@@ -874,11 +873,3 @@ describe('label name resolution', () => {
     ).toContain('/labels/7');
   });
 });
-
-function parseJson<T = unknown>(value: string): T {
-  try {
-    return JSON.parse(value) as T;
-  } catch (error) {
-    throw new Error(`Expected valid JSON: ${String(error)}`, { cause: error });
-  }
-}

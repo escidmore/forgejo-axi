@@ -4,6 +4,8 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
+import { main } from '../src/cli.js';
 
 export interface RecordedRequest {
   method: string;
@@ -75,4 +77,49 @@ export function json(
   response.statusCode = status;
   response.setHeader('content-type', 'application/json');
   response.end(JSON.stringify(data));
+}
+
+/** Servers a test registers here are closed for it by `closeServers`. */
+export const servers: FakeServer[] = [];
+
+export async function closeServers(): Promise<void> {
+  process.exitCode = undefined;
+  await Promise.all(servers.splice(0).map((server) => server.close()));
+}
+
+export async function loadFixture<T>(version: 15 | 16): Promise<T> {
+  return parseJson<T>(
+    await readFile(
+      new URL(`./fixtures/forgejo-${version}.json`, import.meta.url),
+      'utf8',
+    ),
+  );
+}
+
+/** Drive the CLI the way a shell would, capturing stdout and the exit code. */
+export async function invoke(
+  argv: string[],
+  env: NodeJS.ProcessEnv = {},
+): Promise<{ output: string; exitCode: number | undefined }> {
+  let output = '';
+  process.exitCode = undefined;
+  await main({
+    argv,
+    env,
+    stdout: {
+      write: (chunk) => {
+        output += String(chunk);
+        return true;
+      },
+    },
+  });
+  return { output, exitCode: process.exitCode };
+}
+
+export function parseJson<T = unknown>(value: string): T {
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    throw new Error(`Expected valid JSON: ${String(error)}`, { cause: error });
+  }
 }
