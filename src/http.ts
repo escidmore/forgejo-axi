@@ -17,6 +17,8 @@ export interface RequestInput {
   body?: unknown;
   accept?: string;
   allowEncodedSlash?: boolean;
+  /** Skip JSON parsing and token redaction; `data` is the raw response Buffer. */
+  raw?: boolean;
 }
 
 export interface Paginated<T> {
@@ -99,6 +101,45 @@ export class ForgejoHttpClient {
     return { items, complete: false, pages: MAX_PAGES, total };
   }
 
+  /** Like `paginate`, for `GET /actions/runs`, which wraps rows as `{workflow_runs,total_count}`. */
+  async paginateEnvelope<T>(
+    path: string,
+    query: Record<string, string | number | boolean | undefined> = {},
+  ): Promise<Paginated<T>> {
+    const items: T[] = [];
+    let total: number | null = null;
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const response = await this.api<{
+        workflow_runs?: T[];
+        total_count?: number;
+      }>({
+        path,
+        query: { ...query, page, limit: PAGE_SIZE },
+      });
+      const entries = response.data.workflow_runs;
+      if (!Array.isArray(entries)) {
+        throw new ForgejoAxiError(
+          'Forgejo returned a malformed paginated response',
+          'INVALID_RESPONSE',
+        );
+      }
+      if (typeof response.data.total_count === 'number')
+        total = response.data.total_count;
+      items.push(...entries);
+      const doneByTotal = total !== null && items.length >= total;
+      const doneByShortPage = entries.length < PAGE_SIZE;
+      if (doneByTotal || doneByShortPage) {
+        return {
+          items,
+          complete: true,
+          pages: page,
+          total: total ?? items.length,
+        };
+      }
+    }
+    return { items, complete: false, pages: MAX_PAGES, total };
+  }
+
   private request<T>(input: RequestInput): Promise<HttpResponse<T>> {
     const initial = input.url;
     if (!initial)
@@ -110,7 +151,14 @@ export class ForgejoHttpClient {
     const method = (input.method ?? 'GET').toUpperCase();
     const body =
       input.body === undefined ? undefined : JSON.stringify(input.body);
-    return this.requestWithRedirects<T>(url, method, body, input.accept, 0);
+    return this.requestWithRedirects<T>(
+      url,
+      method,
+      body,
+      input.accept,
+      input.raw ?? false,
+      0,
+    );
   }
 
   private async requestWithRedirects<T>(
@@ -118,11 +166,12 @@ export class ForgejoHttpClient {
     method: string,
     body: string | undefined,
     accept: string | undefined,
+    raw: boolean,
     redirects: number,
   ): Promise<HttpResponse<T>> {
-    const response = await this.requestOnce(url, method, body, accept);
+    const response = await this.requestOnce(url, method, body, accept, raw);
     if (!REDIRECT_STATUSES.has(response.status))
-      return this.validate<T>(response);
+      return this.validate<T>(response, raw);
     const location = firstHeader(response.headers['location']);
     if (!location) {
       throw new ForgejoAxiError(
@@ -158,6 +207,7 @@ export class ForgejoHttpClient {
       redirectedMethod,
       redirectedMethod === 'GET' ? undefined : body,
       accept,
+      raw,
       redirects + 1,
     );
   }
@@ -167,6 +217,7 @@ export class ForgejoHttpClient {
     method: string,
     body: string | undefined,
     accept: string | undefined,
+    raw: boolean,
   ): Promise<HttpResponse<unknown>> {
     const headers: Record<string, string | number> = {
       accept: accept ?? 'application/json',
@@ -220,13 +271,21 @@ export class ForgejoHttpClient {
             return;
           }
           try {
-            const text = Buffer.concat(chunks).toString('utf8');
-            const data = parseBody(text, response.headers['content-type']);
+            const buffer = Buffer.concat(chunks);
+            const data = raw
+              ? buffer
+              : redactData(
+                  parseBody(
+                    buffer.toString('utf8'),
+                    response.headers['content-type'],
+                  ),
+                  this.config.token,
+                );
             settled = true;
             resolve({
               status: response.statusCode ?? 0,
               headers: response.headers,
-              data: redactData(data, this.config.token),
+              data,
             });
           } catch (error) {
             rejectOnce(
@@ -243,11 +302,18 @@ export class ForgejoHttpClient {
     });
   }
 
-  private validate<T>(response: HttpResponse<unknown>): HttpResponse<T> {
+  private validate<T>(
+    response: HttpResponse<unknown>,
+    raw: boolean,
+  ): HttpResponse<T> {
     if (response.status >= 200 && response.status < 300) {
       return response as HttpResponse<T>;
     }
-    const message = redact(responseMessage(response.data), this.config.token);
+    const body =
+      raw && Buffer.isBuffer(response.data)
+        ? parseErrorBody(response.data)
+        : response.data;
+    const message = redact(responseMessage(body), this.config.token);
     const code = statusCode(response.status, message);
     throw new ForgejoAxiError(
       message
@@ -296,7 +362,16 @@ function responseMessage(data: unknown): string | null {
   return typeof value === 'string' ? value.slice(0, 500) : null;
 }
 
-function redact(
+/** Error bodies are JSON even on raw byte endpoints; an undecodable body yields no message. */
+function parseErrorBody(buffer: Buffer): unknown {
+  try {
+    return JSON.parse(buffer.toString('utf8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+export function redact(
   message: string | null,
   token: string | undefined,
 ): string | null {

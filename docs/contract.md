@@ -31,6 +31,10 @@ forgejo-axi issue edit --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [-
 forgejo-axi issue close --repo OWNER/REPO NUMBER [--comment TEXT]
 forgejo-axi issue reopen --repo OWNER/REPO NUMBER
 forgejo-axi issue comment --repo OWNER/REPO NUMBER --body TEXT
+forgejo-axi run list --repo OWNER/REPO [--status STATUS] [--branch BRANCH] [--limit N|--full] [--fields LIST|all]
+forgejo-axi run view --repo OWNER/REPO RUN_ID [--log|--log-failed]
+forgejo-axi run cancel --repo OWNER/REPO RUN_ID
+forgejo-axi run download --repo OWNER/REPO RUN_ID --dir DIR [--name NAME]
 ```
 
 With no arguments and no configured base URL, the CLI returns a configuration-free home document. With `FORGEJO_BASE_URL` configured, bare invocation performs the same runtime probes as `status` and may fail with a runtime exit. `--help` and `--version` are top-level, sole-argument invocations.
@@ -58,13 +62,25 @@ Exit `0` means success or an idempotent no-op, `1` means runtime/API/security fa
 }
 ```
 
+A command whose capability the connected host does not advertise returns an unsupported document rather than an error:
+
+```json
+{
+  "supported": false,
+  "capability": "runs",
+  "next": ["complete command"]
+}
+```
+
+Exit is `0` and neither `error` nor `code` is present: an unsupported capability is a definite answer, not a failure. `capability` names the same runtime-probed boolean `status` reports. No request is made against the unsupported API, so the probe is the only traffic the invocation produces.
+
 Paginated responses include `page_info: {complete, pages, fetched, total, displayed, truncated}`. The safety ceiling is 100 pages of 50 rows (5000 fetched rows). Reaching it sets `complete=false`; a definitive-looking empty result must not hide incomplete fetching. TOON lists display 30 rows by default (or `--limit N`) and include a `--full` hint when rows are hidden. `--full` and JSON display every fetched row but cannot make an incomplete fetch complete.
 
 ## Command response schemas
 
 Additive fields are permitted. Nullable fields are emitted as `null`, not omitted, when listed below.
 
-- `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,probe:{source,complete}}}`.
+- `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,runs,run_jobs,run_cancel,run_artifacts,probe:{source,complete}}}`.
 - `repo view`: `{repository:{full_name,url,api_url,description,private,archived,default_branch,has_actions,has_pull_requests,open_pull_requests}}`.
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
@@ -77,6 +93,10 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `issue list`: `{issues,page_info,next?}`. Rows carry the selected identity fields, defaulting to `number,title,state,labels`. A repository with no matching issues is `issues: []` with `page_info.fetched=0` and exit `0`.
 - `issue view`: `{issue,comments,comment_info,next?}`. `issue` is an issue identity plus `body`, `body_length`, and `body_truncated`. `comment_info` is `{fetched,displayed,truncated}`.
 - `issue create`: `{issue}`. `issue edit`: `{updated,issue}`. `issue close` and `issue reopen`: `{updated,issue}`, plus `comment` when `--comment` posted one. `issue comment`: `{comment}`.
+- `run list`: `{runs,page_info,next?}`, sharing the `page_info` shape above. Rows carry the selected identity fields, defaulting to `id,title,status,branch`. A repository with no matching runs is `runs: []` with `page_info.fetched=0` and exit `0`.
+- `run view`: `{run,jobs,next?}`. `jobs` is an ordered array of job identities.
+- `run cancel`: `{cancelled,run}`. `run download`: `{run_id,dir,downloaded}`, where `downloaded` rows are `{name,size_in_bytes,path}`.
+- Each `run` command returns the unsupported document described above, with `capability: "runs"`, when the host does not advertise the Actions runs API.
 
 ## Stable lifecycle objects
 
@@ -112,4 +132,12 @@ Assignee usernames are not resolved before mutation the way label and milestone 
 
 `label create` reconciles: an existing label of that name is patched toward the requested color and description rather than duplicated, reporting `created=false`. A label already in the desired state is exit `0` and mutation-free. New labels default to color `#ededed` and an empty description. `--color` must be a six-digit hex color, validated before any request. `label edit --name` renames in place, preserving the label's issue assignments; renaming onto a name the repository already carries is refused with `LABEL_EXISTS` (exit `2`).
 
-Capabilities are runtime-probed booleans, never version assumptions. If the Swagger document is unavailable, forbidden, rate-limited, malformed, times out, or returns a server error after the API version probe succeeds, status returns all capability booleans false with `probe.complete=false` instead of failing the entire status command. Forgejo 15 reports Actions job logs unsupported; Forgejo 16 reports support only when its runtime document advertises the route. Unsupported logs never alter commit-status semantics.
+A run identity is `{id, url, api_url, title, event, branch, head_sha, run_number, status, started_at, completed_at}`. `url` and `api_url` are constructed from the configured canonical base URL and repository identity, not trusted response links. `branch` is the short name of the git ref the run was triggered from and `status` is the run state Forgejo reports, defaulting to `unknown`; `started_at` and `completed_at` are `null` while unset. A job identity is `{id, run_id, name, status}`, plus `log` when a log was requested and folded in.
+
+`run list --status` accepts `unknown`, `waiting`, `running`, `success`, `failure`, `cancelled`, `skipped`, or `blocked`, validated before any request; `--branch` filters on the branch the run was triggered from. `run view --log` folds every job's log into its job entry and `--log-failed` folds only failed jobs' logs; the two cannot be combined. When job logs are requested but the host does not advertise the log route, the logs are omitted and `next` says so — an unsupported log is never an error and never alters the rest of the response. Capabilities are probed per route: a host that lists runs without the jobs route (Forgejo 15.0.5 does) gets `run view` with `jobs: []` and `next` saying so, while `run cancel` and `run download` report `{supported: false}` with capabilities `run_cancel` and `run_artifacts` when their routes are missing.
+
+`run cancel` reports `cancelled=true` only when the run was still actionable beforehand; cancelling an already finished run is exit `0`, `cancelled=false`, and returns the run unchanged.
+
+`run download` writes each artifact to `{--dir}/{name}.zip`, creating `--dir` and its parents when missing, and narrows to one artifact with `--name`. An existing file is never overwritten: the download fails with `ARTIFACT_EXISTS` (exit `1`) naming the path. An artifact name Forgejo returns that would escape the directory is refused as `INVALID_RESPONSE`. Artifacts are written one at a time, so a failure partway through leaves the artifacts already written on disk.
+
+Capabilities are runtime-probed booleans, never version assumptions. If the Swagger document is unavailable, forbidden, rate-limited, malformed, times out, or returns a server error after the API version probe succeeds, status returns all capability booleans false with `probe.complete=false` instead of failing the entire status command. Forgejo 15 reports Actions job logs and Actions runs unsupported; Forgejo 16 reports support only when its runtime document advertises each route. Unsupported logs never alter commit-status semantics.

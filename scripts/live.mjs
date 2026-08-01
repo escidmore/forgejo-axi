@@ -391,6 +391,46 @@ try {
       repo.url === `${BASE_URL.replace(/\/$/, '')}/${REPO}`,
   );
 
+  // ---- run family, no runner required ----------------------------------------
+  // A real host answers `run list` with {workflow_runs: []} even before any
+  // workflow has run — exactly the envelope a hand-written fixture once got
+  // wrong, so decode it against the genuine article.
+  if (probed.capabilities?.runs === true) {
+    const runs = cli(['run', 'list', '--repo', REPO]);
+    ok(
+      'run list decodes the real envelope',
+      Array.isArray(runs.runs) && runs.page_info.complete === true,
+      `fetched=${runs.runs.length}`,
+    );
+    const filtered = cli([
+      'run',
+      'list',
+      '--repo',
+      REPO,
+      '--status',
+      'success',
+      '--branch',
+      'main',
+    ]);
+    ok(
+      'run list filters are accepted by the host',
+      Array.isArray(filtered.runs),
+    );
+    ok(
+      'run view maps a missing run to NOT_FOUND',
+      cli(['run', 'view', '--repo', REPO, '999999999'], { allowFail: true })
+        .code === 'NOT_FOUND',
+    );
+  } else {
+    const unsupported = cli(['run', 'list', '--repo', REPO], {
+      allowFail: true,
+    });
+    ok(
+      'run family reports unsupported from the probe',
+      unsupported.supported === false && unsupported.capability === 'runs',
+    );
+  }
+
   // ---- a real multi-page endpoint ------------------------------------------
   // One Forgejo endpoint is already known to ignore page and limit. The shared
   // pagination helper is what issue list, pr list and label list all walk, so

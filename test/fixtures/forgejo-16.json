@@ -6,7 +6,12 @@
       "/repos/{owner}/{repo}/pulls/{index}/merge": {},
       "/repos/{owner}/{repo}/statuses/{sha}": {},
       "/repos/{owner}/{repo}/branches/{branch}": {},
-      "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs": {}
+      "/repos/{owner}/{repo}/actions/jobs/{job_id}/logs": {},
+      "/repos/{owner}/{repo}/actions/runs": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/cancel": {},
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts": {}
     },
     "definitions": {
       "MergePullRequestOption": {
@@ -71,5 +76,24 @@
     "merge_commit_sha": null,
     "merged_at": null,
     "merged_by": null
-  }
+  },
+  "run": {
+    "id": 9,
+    "title": "CI",
+    "event": "push",
+    "prettyref": "main",
+    "commit_sha": "def456",
+    "index_in_repo": 3,
+    "status": "success",
+    "started": "2026-01-03T00:00:00Z",
+    "stopped": "2026-01-03T00:05:00Z"
+  },
+  "jobs": [
+    { "id": 21, "run_id": 9, "name": "build", "status": "success" },
+    { "id": 22, "run_id": 9, "name": "test", "status": "failure" }
+  ],
+  "artifacts": [
+    { "id": 31, "name": "coverage", "size_in_bytes": 1024 },
+    { "id": 32, "name": "bundle", "size_in_bytes": 2048 }
+  ]
 }

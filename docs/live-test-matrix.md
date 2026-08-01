@@ -1,6 +1,6 @@
-# Future live-test matrix
+# Live-test matrix
 
-Live tests are deliberately absent from default CI. Enabling them requires user-approved, isolated endpoints and least-privilege test repositories; tests must never target production repositories or infer an endpoint from local configuration.
+The live lanes are the project's primary evidence of correctness — a fixture can only prove the code agrees with itself, and the run-family schema bugs showed both layers agreeing on shapes Forgejo never sends. Running both lanes locally is required before committing any change to API requests, response handling, or fixtures. They stay out of automated CI only because CI lacks the hosts; the endpoints are user-approved, isolated, least-privilege test repositories, and tests must never target production repositories or infer an endpoint from ordinary local configuration.
 
 | Lane             | Runtime  | Required assertions                                                                                 |
 | ---------------- | -------- | --------------------------------------------------------------------------------------------------- |
@@ -19,17 +19,19 @@ A captain-approved run against a disposable test repository on both lane hosts c
 
 `pr merge --expected-head` with a stale head was refused with `HEAD_CHANGED` on both hosts, and the pull request was still unmerged afterwards — the race guard proven against real servers rather than a fake one.
 
+The first run-family lane run corrected a fixture in both directions: real 15.0.5 advertises `/actions/runs` and `/actions/runs/{run_id}` — the fixtures had claimed it carried no Actions routes at all — while lacking the jobs, cancel, artifacts, and logs subroutes that 16.0.1 has. That split is why the CLI probes run capabilities per route rather than as one flag.
+
 The `state`, `label`, `assignee`, and `milestone` filters each demonstrably narrowed the returned set — the assertion that matters, because Forgejo answers an unrecognised filter with an unfiltered list rather than an error. `issue comment` against a real pull request number landed in that pull request's discussion, with Forgejo setting `pull_request_url` on the resulting comment.
 
 Both runs deleted every issue, pull request, branch, label, and milestone they created, and both repositories were verified empty afterwards. Note that `status` reports `authenticated: false` for a token lacking `read:user` even when that token is fully able to perform repository and issue work; the auth probe reflects one scope, not overall usability.
 
 ## What a lane covers
 
-Each lane runs 44 assertions: the whole issue family; `label` create, list, edit, and delete; `repo view`; `api --paginate` across a genuine page boundary; and `pr` create, list, find, view, update, checks, mergeability, merge, and merged.
+Each lane runs the whole issue family; `label` create, list, edit, and delete; `repo view`; `api --paginate` across a genuine page boundary; `pr` create, list, find, view, update, checks, mergeability, merge, and merged; and runner-free `run` probes. On a host advertising the runs capability, `run list` must decode Forgejo's real `{workflow_runs}` envelope and have its `--status` and `--branch` filters accepted, and a missing run must map to `NOT_FOUND`; on a host without the route, the family must report itself unsupported from the probe.
 
 Two of those exist only because a real server behaves unlike a fake one. Pagination is walked against 55 seeded labels, so the shared helper is proven to cross a page boundary without dropping a row — worth asserting because one Forgejo endpoint is already known to ignore `page` and `limit` entirely. And Forgejo computes mergeability in the background, answering `405 please try again later` until it settles, so the lane waits for the server rather than racing it. Checks are aggregated from a commit status seeded through the statuses API, which also pins down that an empty status set reads as `none` rather than as a failure.
 
-Not yet covered live, each needing more than a disposable repository: branch protection and required status contexts; Actions job logs on 16, which needs a runner and a real workflow run; the `rebase` and `merge` methods, since only `squash` is exercised; the reconcile and race-recovery paths in `pr create` and `label create`; non-`GET` `api` verbs; and transport behaviour — CA files, path prefixes, and redirects. Wiring the lanes into CI as manually-approved, non-blocking jobs is also outstanding.
+Not yet covered live, each needing more than a disposable repository: branch protection and required status contexts; Actions runs with real content — job logs, cancel, and artifact download — which need a runner and a real workflow run; Actions run list, view, cancel, and download on 16, which needs the same runner and a run that produces an artifact; the `rebase` and `merge` methods, since only `squash` is exercised; the reconcile and race-recovery paths in `pr create` and `label create`; non-`GET` `api` verbs; and transport behaviour — CA files, path prefixes, and redirects. Wiring the lanes into CI as manually-approved, non-blocking jobs is also outstanding.
 
 ## Running a lane
 
@@ -41,4 +43,4 @@ Two independent guards run before anything is written. The harness targets `FORG
 
 Each lane should receive an explicit base URL, repository, host-scoped token secret, expected CA, and expected major/minor through protected CI environment variables. The harness should create a unique branch and PR only inside a pre-provisioned disposable repository, prove an expected-head race, delete its branch when safe, redact all captured traffic, and fail before mutation if the host identity or repository allowlist differs.
 
-Capability expectations must be checked against the runtime Swagger probe, not derived from the expected version. A missing log route is an unsupported capability and must not alter commit-status results. Keep local fixture/fake-server coverage as the required PR gate; make live lanes manually approved, non-blocking until their isolation and cleanup controls are validated, and never share tokens or repositories between the 15 and 16 lanes.
+Capability expectations must be checked against the runtime Swagger probe, not derived from the expected version. A missing log route is an unsupported capability and must not alter commit-status results. Fixture/fake-server coverage remains the automated CI gate for speed, but the live lanes are the required local gate for any API-touching change, and never share tokens or repositories between the 15 and 16 lanes.
