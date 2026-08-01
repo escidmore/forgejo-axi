@@ -116,3 +116,11 @@ export function rejectPositionals(parsed: ParsedArgs): void {
     throw usageError(`Unexpected arguments: ${parsed.positionals.join(' ')}`);
   }
 }
+
+export function positiveInteger(value: string, label: string): number {
+  if (!/^[1-9]\d*$/.test(value))
+    throw usageError(`${label} must be a positive integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw usageError(`${label} is too large`);
+  return parsed;
+}
