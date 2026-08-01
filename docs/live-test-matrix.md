@@ -2,16 +2,16 @@
 
 Live tests are deliberately absent from default CI. Enabling them requires captain-approved, isolated endpoints and least-privilege test repositories; tests must never target production repositories or infer an endpoint from local configuration.
 
-| Lane             | Runtime        | Required assertions                                                                                 |
-| ---------------- | -------------- | --------------------------------------------------------------------------------------------------- |
-| `forgejo-15-lts` | Exactly 15.0.5 | PR/status/protection/expected-head merge APIs work; `actions_job_logs=false` from the runtime probe |
-| `forgejo-16`     | Approved 16.x  | The same lifecycle assertions remain unchanged; Actions job logs match the probed route             |
+| Lane             | Runtime  | Required assertions                                                                                 |
+| ---------------- | -------- | --------------------------------------------------------------------------------------------------- |
+| `forgejo-15-lts` | `15.0.x` | PR/status/protection/expected-head merge APIs work; `actions_job_logs=false` from the runtime probe |
+| `forgejo-16`     | `16.0.x` | The same lifecycle assertions remain unchanged; Actions job logs match the probed route             |
 
-The eventual `forgejo-16` target is `https://forgejo.samesies.gay`, currently Forgejo 16.0.1; the `forgejo-15-lts` target is `https://forgejo-15.samesies.gay`, running exactly 15.0.5. Naming them here is not authorization to access or mutate them; every live run still requires the inputs and explicit approval below.
+Neither lane's host is named in this repository. Each is supplied at run time through the environment — `FORGEJO_BASE_URL` for `forgejo-16` and `FORGEJO_15_BASE_URL` for `forgejo-15-lts` — so a published document never discloses internal infrastructure. A lane is identified here only by the version it requires, and the harness confirms that version against the host that actually answers.
 
 ## Validated by the approved issue-family run
 
-A captain-approved run against the disposable `eve/forgejo-axi-test` repository on both hosts confirmed the runtime behaviours the issue family depends on, in both directions of the version split. The capability probe reported `actions_job_logs=false` on 15.0.5 and `true` on 16.0.1, matching the lanes above. Three assumptions that fixtures cannot prove held identically on both:
+A captain-approved run against a disposable test repository on both lane hosts confirmed the runtime behaviours the issue family depends on, in both directions of the version split. The capability probe reported `actions_job_logs=false` on 15.0.5 and `true` on 16.0.1, matching the lanes above. Three assumptions that fixtures cannot prove held identically on both:
 
 - The issue comments endpoint ignores `page` and `limit`. With 55 comments seeded, `?limit=10` returned all 55 with no `Link` header and `x-total-count: 55` on both hosts. Fetching the thread in one request is correct, and routing it through the paginating helper would have been wrong.
 - `PUT /issues/{index}/labels` accepts integer label ids on 15.0.5, so label replacement does not need a name-based fallback.
