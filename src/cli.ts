@@ -18,11 +18,13 @@ import {
   parseIssueNumber,
   parsePullNumber,
   parseRepository,
+  parseRunId,
   type IssueIdentity,
   type IssueInput,
   type LabelInput,
   type PullRequestIdentity,
   type RepositoryRef,
+  type RunIdentity,
 } from './forgejo.js';
 
 export interface MainOptions {
@@ -52,6 +54,7 @@ Usage:
   forgejo-axi pr <find|list|view|create|update|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
   forgejo-axi issue <list|view|create|edit|close|reopen|comment> ...
+  forgejo-axi run <list|view|cancel|download> ...
 
 Connection flags:
   --base-url URL     Forgejo root URL; defaults to FORGEJO_BASE_URL
@@ -113,10 +116,25 @@ Labels and milestones are addressed by name; ids are resolved for you.
 Run \`forgejo-axi issue <command> --help\` for flags and examples.
 `;
 
+const RUN_HELP = `forgejo-axi run — Actions run lifecycle commands
+
+Commands:
+  list      List Actions runs
+  view      View a run and its jobs, optionally with job logs
+  cancel    Cancel a pending or running run
+  download  Download a run's artifacts to a directory
+
+Every run command reports {supported: false, capability: 'runs'} instead of
+running when the connected Forgejo does not advertise the Actions runs API.
+
+Run \`forgejo-axi run <command> --help\` for flags and examples.
+`;
+
 const FAMILY_HELP: Record<string, string> = {
   pr: PR_HELP,
   label: LABEL_HELP,
   issue: ISSUE_HELP,
+  run: RUN_HELP,
 };
 
 const HELP: Record<string, string> = {
@@ -143,6 +161,10 @@ const HELP: Record<string, string> = {
   'issue close': `forgejo-axi issue close — close an issue\n\nUsage:\n  forgejo-axi issue close --repo OWNER/REPO NUMBER [--comment TEXT] [connection flags]\n\nFlags:\n  --comment TEXT  Post this comment before closing\n\nExample:\n  forgejo-axi issue close --repo owner/repo 7 --comment 'Fixed in #42'\n`,
   'issue reopen': `forgejo-axi issue reopen — reopen a closed issue\n\nUsage:\n  forgejo-axi issue reopen --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi issue reopen --repo owner/repo 7\n`,
   'issue comment': `forgejo-axi issue comment — post a comment\n\nUsage:\n  forgejo-axi issue comment --repo OWNER/REPO NUMBER --body TEXT [connection flags]\n\nNUMBER may be a pull request; Forgejo serves pull request discussion through\nthe same issue comment endpoint.\n\nExample:\n  forgejo-axi issue comment --repo owner/repo 7 --body 'Reproduced on 15.0.5'\n`,
+  'run list': `forgejo-axi run list — list Actions runs\n\nUsage:\n  forgejo-axi run list --repo OWNER/REPO [--status STATUS] [--branch BRANCH] [--limit N|--full] [--fields LIST|all] [connection flags]\n\nFlags:\n  --status STATUS  unknown|waiting|running|success|failure|cancelled|skipped|blocked\n  --branch BRANCH  Only runs triggered from this branch\n  --fields LIST    Comma-separated identity fields; defaults to id,title,status,branch\n\nExample:\n  forgejo-axi run list --repo owner/repo --status failure\n`,
+  'run view': `forgejo-axi run view — show a run and its jobs\n\nUsage:\n  forgejo-axi run view --repo OWNER/REPO RUN_ID [--log|--log-failed] [connection flags]\n\nFlags:\n  --log          Fold every job's log into its job entry\n  --log-failed   Fold only failed jobs' logs\n\nJob logs are omitted, not errored, when the host does not advertise job logs.\n\nExample:\n  forgejo-axi run view --repo owner/repo 42 --log-failed\n`,
+  'run cancel': `forgejo-axi run cancel — cancel a pending or running run\n\nUsage:\n  forgejo-axi run cancel --repo OWNER/REPO RUN_ID [connection flags]\n\nCancelling an already-finished run is a no-op; cancelled is false.\n\nExample:\n  forgejo-axi run cancel --repo owner/repo 42\n`,
+  'run download': `forgejo-axi run download — download a run's artifacts\n\nUsage:\n  forgejo-axi run download --repo OWNER/REPO RUN_ID --dir DIR [--name NAME] [connection flags]\n\nFlags:\n  --dir DIR    Target directory; created if missing\n  --name NAME  Only artifacts with this exact name\n\nExisting files are never overwritten; download fails instead.\n\nExample:\n  forgejo-axi run download --repo owner/repo 42 --dir ./artifacts\n`,
 };
 
 export async function main(options: MainOptions = {}): Promise<void> {
@@ -225,6 +247,7 @@ async function dispatch(
   if (command === 'pr') return runPull(rest, env);
   if (command === 'label') return runLabel(rest, env);
   if (command === 'issue') return runIssue(rest, env);
+  if (command === 'run') return runRun(rest, env);
   throw usageError(`Unknown command: ${command}`, ['Run `forgejo-axi --help`']);
 }
 
@@ -880,6 +903,172 @@ function commaList(raw: string): string[] {
     .filter((value) => value !== '');
 }
 
+async function runRun(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === '--help') return helpResult('run');
+  const key = `run ${subcommand}`;
+  if (!Object.hasOwn(HELP, key)) {
+    throw usageError(`Unknown run command: ${subcommand}`, [
+      'Run `forgejo-axi run --help`',
+    ]);
+  }
+  const rest = args.slice(1);
+  if (rest.includes('--help')) return helpResult(key);
+  switch (subcommand) {
+    case 'list':
+      return runList(rest, env);
+    case 'view':
+      return runView(rest, env);
+    case 'cancel':
+      return runCancel(rest, env);
+    case 'download':
+      return runDownload(rest, env);
+    default:
+      throw usageError(`Unknown run command: ${subcommand}`);
+  }
+}
+
+async function runList(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--status': 'value',
+      '--branch': 'value',
+      '--limit': 'value',
+      '--full': 'boolean',
+      '--fields': 'value',
+    }),
+    'run list',
+  );
+  rejectPositionals(parsed);
+  const full = boolFlag(parsed, '--full');
+  const json = boolFlag(parsed, '--json');
+  const requestedLimit = stringFlag(parsed, '--limit');
+  rejectDisplayFlagConflicts(full, requestedLimit, json);
+  const repo = resolveRepo(parsed, env);
+  const status = stringFlag(parsed, '--status');
+  if (status !== undefined) runStatusFlag(status);
+  const branch = stringFlag(parsed, '--branch');
+  const service = await serviceFor(parsed, env);
+  if (!(await service.runCapabilities()).runs) return unsupportedResult('runs');
+  const page = await service.listRuns(repo, {
+    ...(status === undefined ? {} : { status }),
+    ...(branch === undefined ? {} : { branch }),
+  });
+  const showAll = full || json;
+  const fields = chooseFields<RunIdentity>(
+    stringFlag(parsed, '--fields'),
+    RUN_IDENTITY_FIELDS,
+    DEFAULT_RUN_LIST_FIELDS,
+  );
+  const displayed = (
+    showAll ? page.items : page.items.slice(0, displayLimit(requestedLimit))
+  ).map((run) => selectFields(run, fields));
+  return listOutput('runs', displayed, page, showAll);
+}
+
+async function runView(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--log': 'boolean',
+      '--log-failed': 'boolean',
+    }),
+    'run view',
+  );
+  const runId = parseRunId(requireOnePositional(parsed, 'run id'));
+  const repo = resolveRepo(parsed, env);
+  const wantLog = boolFlag(parsed, '--log');
+  const wantLogFailed = boolFlag(parsed, '--log-failed');
+  if (wantLog && wantLogFailed)
+    throw usageError('--log and --log-failed cannot be combined');
+  const service = await serviceFor(parsed, env);
+  const capabilities = await service.runCapabilities();
+  if (!capabilities.runs) return unsupportedResult('runs');
+  const requested = wantLog ? 'all' : wantLogFailed ? 'failed' : 'none';
+  const log =
+    requested !== 'none' && !capabilities.job_logs ? 'none' : requested;
+  const result = await service.viewRun(repo, runId, log);
+  const skippedLog = requested !== 'none' && log === 'none';
+  return {
+    ...result,
+    ...(skippedLog
+      ? { next: ['Job logs are unsupported on this Forgejo host'] }
+      : {}),
+  };
+}
+
+async function runCancel(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({ '--repo': 'value' }),
+    'run cancel',
+  );
+  const runId = parseRunId(requireOnePositional(parsed, 'run id'));
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  if (!(await service.runCapabilities()).runs) return unsupportedResult('runs');
+  return service.cancelRun(repo, runId);
+}
+
+async function runDownload(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({ '--repo': 'value', '--dir': 'value', '--name': 'value' }),
+    'run download',
+  );
+  const runId = parseRunId(requireOnePositional(parsed, 'run id'));
+  const repo = resolveRepo(parsed, env);
+  const dir = requireFlag(parsed, '--dir');
+  const name = stringFlag(parsed, '--name');
+  const service = await serviceFor(parsed, env);
+  if (!(await service.runCapabilities()).runs) return unsupportedResult('runs');
+  return service.downloadRunArtifacts(repo, runId, name, dir);
+}
+
+const RUN_STATUSES = [
+  'unknown',
+  'waiting',
+  'running',
+  'success',
+  'failure',
+  'cancelled',
+  'skipped',
+  'blocked',
+];
+
+function runStatusFlag(value: string): void {
+  if (!RUN_STATUSES.includes(value))
+    throw usageError(`--status must be one of ${RUN_STATUSES.join(', ')}`);
+}
+
+function unsupportedResult(capability: string): Record<string, unknown> {
+  return {
+    supported: false,
+    capability,
+    next: [
+      `Upgrade Forgejo to a release that advertises the ${capability} API`,
+    ],
+  };
+}
+
 async function serviceFor(
   parsed: ParsedArgs,
   env: NodeJS.ProcessEnv,
@@ -968,6 +1157,25 @@ const DEFAULT_ISSUE_LIST_FIELDS: ReadonlyArray<keyof IssueIdentity> = [
   'title',
   'state',
   'labels',
+];
+const RUN_IDENTITY_FIELDS: ReadonlyArray<keyof RunIdentity> = [
+  'id',
+  'url',
+  'api_url',
+  'title',
+  'event',
+  'branch',
+  'head_sha',
+  'run_number',
+  'status',
+  'started_at',
+  'completed_at',
+];
+const DEFAULT_RUN_LIST_FIELDS: ReadonlyArray<keyof RunIdentity> = [
+  'id',
+  'title',
+  'status',
+  'branch',
 ];
 
 function rejectDisplayFlagConflicts(

@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { minimatch } from 'minimatch';
 import { appendPath, type ConnectionConfig } from './config.js';
 import { ForgejoAxiError, usageError } from './errors.js';
@@ -97,6 +99,33 @@ interface ApiComment {
   updated_at?: string;
 }
 
+interface ApiActionRun {
+  id?: number;
+  title?: string;
+  event?: string;
+  head_branch?: string;
+  head_sha?: string;
+  run_number?: number;
+  status?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+interface ApiActionRunJob {
+  id?: number;
+  run_id?: number;
+  name?: string;
+  status?: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+interface ApiActionArtifact {
+  id?: number;
+  name?: string;
+  size_in_bytes?: number;
+}
+
 export interface RepositoryRef {
   owner: string;
   name: string;
@@ -187,6 +216,49 @@ export interface IssueInput {
   milestone?: string;
   state?: string;
 }
+
+export interface RunIdentity {
+  id: number;
+  url: string;
+  api_url: string;
+  title: string;
+  event: string;
+  branch: string;
+  head_sha: string;
+  run_number: number;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface JobIdentity {
+  id: number;
+  run_id: number;
+  name: string;
+  status: string;
+  started_at: string | null;
+  completed_at: string | null;
+  log?: string | null;
+}
+
+export interface RunFilters {
+  status?: string;
+  branch?: string;
+}
+
+export interface ArtifactDownload {
+  name: string;
+  size_in_bytes: number;
+  path: string;
+}
+
+/** Run states Forgejo will no longer act on; used only to report whether a cancel changed anything. */
+const DONE_RUN_STATUSES = new Set([
+  'success',
+  'failure',
+  'cancelled',
+  'skipped',
+]);
 
 type CheckState = 'none' | 'pending' | 'failure' | 'success';
 type RequiredState =
@@ -840,6 +912,154 @@ export class ForgejoService {
     };
   }
 
+  /** Probed once per invocation; the CLI seam decides whether to render Unsupported. */
+  async runCapabilities(): Promise<{ runs: boolean; job_logs: boolean }> {
+    const capabilities = await this.probeCapabilities();
+    return {
+      runs: Boolean(capabilities['runs']),
+      job_logs: Boolean(capabilities['actions_job_logs']),
+    };
+  }
+
+  async listRuns(
+    repo: RepositoryRef,
+    filters: RunFilters,
+  ): Promise<Paginated<RunIdentity>> {
+    const query: Record<string, string> = {};
+    if (filters.status !== undefined) query['status'] = filters.status;
+    if (filters.branch !== undefined) query['ref'] = filters.branch;
+    const page = await this.http.paginateEnvelope<ApiActionRun>(
+      `${repoPath(repo)}/actions/runs`,
+      query,
+    );
+    return {
+      ...page,
+      items: page.items.map((item) => normalizeRun(this.config, repo, item)),
+    };
+  }
+
+  async viewRun(
+    repo: RepositoryRef,
+    runId: number,
+    log: 'none' | 'all' | 'failed',
+  ): Promise<{ run: RunIdentity; jobs: JobIdentity[] }> {
+    const run = normalizeRun(
+      this.config,
+      repo,
+      await this.getRunRaw(repo, runId),
+    );
+    const jobsResponse = await this.http.api<ApiActionRunJob[]>({
+      path: `${repoPath(repo)}/actions/runs/${runId}/jobs`,
+    });
+    if (!Array.isArray(jobsResponse.data)) {
+      throw new ForgejoAxiError(
+        'Forgejo returned a non-array job response',
+        'INVALID_RESPONSE',
+      );
+    }
+    const jobs = jobsResponse.data.map((job) => normalizeJob(job));
+    if (log === 'none') return { run, jobs };
+    const withLogs: JobIdentity[] = [];
+    for (const job of jobs) {
+      if (log === 'failed' && job.status !== 'failure') {
+        withLogs.push(job);
+        continue;
+      }
+      withLogs.push({ ...job, log: await this.getJobLog(repo, job.id) });
+    }
+    return { run, jobs: withLogs };
+  }
+
+  async cancelRun(
+    repo: RepositoryRef,
+    runId: number,
+  ): Promise<Record<string, unknown>> {
+    const before = await this.getRunRaw(repo, runId);
+    const wasDone = DONE_RUN_STATUSES.has(before.status ?? '');
+    await this.http.api({
+      method: 'POST',
+      path: `${repoPath(repo)}/actions/runs/${runId}/cancel`,
+    });
+    const after = await this.getRunRaw(repo, runId);
+    return {
+      cancelled: !wasDone,
+      run: normalizeRun(this.config, repo, after),
+    };
+  }
+
+  async downloadRunArtifacts(
+    repo: RepositoryRef,
+    runId: number,
+    name: string | undefined,
+    dir: string,
+  ): Promise<{ run_id: number; dir: string; downloaded: ArtifactDownload[] }> {
+    const query: Record<string, string> = {};
+    if (name !== undefined) query['name'] = name;
+    const page = await this.http.paginateEnvelope<ApiActionArtifact>(
+      `${repoPath(repo)}/actions/runs/${runId}/artifacts`,
+      query,
+    );
+    if (!page.complete) {
+      throw new ForgejoAxiError(
+        'Artifact search reached the pagination safety ceiling',
+        'PAGINATION_INCOMPLETE',
+        {
+          details: { pages: page.pages, fetched: page.items.length },
+          suggestions: ['Narrow the artifact name and retry'],
+        },
+      );
+    }
+    await mkdir(dir, { recursive: true });
+    const downloaded: ArtifactDownload[] = [];
+    for (const artifact of page.items) {
+      const artifactName = requireSafeArtifactName(artifact.name);
+      const artifactId = requireArtifactId(artifact.id);
+      const response = await this.http.api<Buffer>({
+        path: `${repoPath(repo)}/actions/artifacts/${artifactId}/zip`,
+        accept: 'application/octet-stream',
+        raw: true,
+      });
+      const path = join(dir, `${artifactName}.zip`);
+      try {
+        await writeFile(path, response.data, { flag: 'wx' });
+      } catch (error) {
+        if (isNodeError(error) && error.code === 'EEXIST') {
+          throw new ForgejoAxiError(
+            `Artifact file already exists: ${path}`,
+            'ARTIFACT_EXISTS',
+            { details: { path } },
+          );
+        }
+        throw error;
+      }
+      downloaded.push({
+        name: artifactName,
+        size_in_bytes: artifact.size_in_bytes ?? response.data.length,
+        path,
+      });
+    }
+    return { run_id: runId, dir, downloaded };
+  }
+
+  private async getRunRaw(
+    repo: RepositoryRef,
+    runId: number,
+  ): Promise<ApiActionRun> {
+    const response = await this.http.api<ApiActionRun>({
+      path: `${repoPath(repo)}/actions/runs/${runId}`,
+    });
+    return response.data;
+  }
+
+  private async getJobLog(repo: RepositoryRef, jobId: number): Promise<string> {
+    const response = await this.http.api<Buffer>({
+      path: `${repoPath(repo)}/actions/jobs/${jobId}/logs`,
+      accept: 'text/plain',
+      raw: true,
+    });
+    return response.data.toString('utf8');
+  }
+
   private async getIssue(
     repo: RepositoryRef,
     number: number,
@@ -1045,6 +1265,7 @@ export class ForgejoService {
       actions_job_logs: hasPath(
         '/repos/{owner}/{repo}/actions/jobs/{job_id}/logs',
       ),
+      runs: hasPath('/repos/{owner}/{repo}/actions/runs'),
     };
     return capabilityObject(capabilities, 'swagger', true);
   }
@@ -1072,6 +1293,10 @@ export function parsePullNumber(raw: string): number {
 
 export function parseIssueNumber(raw: string): number {
   return parseNumber(raw, 'Issue number');
+}
+
+export function parseRunId(raw: string): number {
+  return parseNumber(raw, 'Run id');
 }
 
 function parseNumber(raw: string, label: string): number {
@@ -1248,6 +1473,77 @@ function normalizeMilestone(milestone: ApiMilestone): MilestoneIdentity {
     name: milestone.title ?? '',
     state: milestone.state ?? 'unknown',
   };
+}
+
+function normalizeRun(
+  config: ConnectionConfig,
+  repo: RepositoryRef,
+  run: ApiActionRun,
+): RunIdentity {
+  if (!Number.isSafeInteger(run.id) || !run.id || run.id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo run response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  const id = run.id;
+  return {
+    id,
+    url: `${canonicalRepoUrl(config, repo)}/actions/runs/${id}`,
+    api_url: `${canonicalRepoApiUrl(config, repo)}/actions/runs/${id}`,
+    title: run.title ?? '',
+    event: run.event ?? '',
+    branch: run.head_branch ?? '',
+    head_sha: run.head_sha ?? '',
+    run_number: run.run_number ?? 0,
+    status: run.status ?? 'unknown',
+    started_at: run.started_at ?? null,
+    completed_at: run.completed_at ?? null,
+  };
+}
+
+function normalizeJob(job: ApiActionRunJob): JobIdentity {
+  if (!Number.isSafeInteger(job.id) || !job.id || job.id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo job response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  return {
+    id: job.id,
+    run_id: job.run_id ?? 0,
+    name: job.name ?? '',
+    status: job.status ?? 'unknown',
+    started_at: job.started_at ?? null,
+    completed_at: job.completed_at ?? null,
+  };
+}
+
+/** Rejects path-traversal-shaped artifact names before they become a filesystem path. */
+function requireSafeArtifactName(raw: string | undefined): string {
+  const name = raw ?? '';
+  if (!name || name === '.' || name === '..' || /[/\\]/.test(name)) {
+    throw new ForgejoAxiError(
+      'Forgejo artifact response carried an unsafe name',
+      'INVALID_RESPONSE',
+      { details: { name } },
+    );
+  }
+  return name;
+}
+
+function requireArtifactId(id: number | undefined): number {
+  if (!Number.isSafeInteger(id) || !id || id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo artifact response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  return id;
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && 'code' in error;
 }
 
 function previewBody(raw: string | undefined, full: boolean): BodyPreview {
@@ -1514,6 +1810,7 @@ interface ProbedCapabilities {
   branch_protection?: boolean;
   expected_head_merge?: boolean;
   actions_job_logs?: boolean;
+  runs?: boolean;
 }
 
 function capabilityObject(
@@ -1527,6 +1824,7 @@ function capabilityObject(
     branch_protection: capabilities.branch_protection ?? false,
     expected_head_merge: capabilities.expected_head_merge ?? false,
     actions_job_logs: capabilities.actions_job_logs ?? false,
+    runs: capabilities.runs ?? false,
     probe: { source, complete },
   };
 }
