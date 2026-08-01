@@ -316,7 +316,7 @@ export interface ArtifactDownload {
   path: string;
 }
 
-/** Run states Forgejo will no longer act on; used only to report whether a cancel changed anything. */
+/** Run states Forgejo will no longer act on; a cancel of one is skipped, not sent. */
 const DONE_RUN_STATUSES = new Set([
   'success',
   'failure',
@@ -1126,14 +1126,19 @@ export class ForgejoService {
     runId: number,
   ): Promise<Record<string, unknown>> {
     const before = await this.getRunRaw(repo, runId);
-    const wasDone = DONE_RUN_STATUSES.has(before.status ?? '');
+    // A finished run is reported unchanged without asking Forgejo to cancel it.
+    // Sending the request anyway would make the contracted no-op depend on the
+    // host tolerating a redundant cancel.
+    if (DONE_RUN_STATUSES.has(before.status ?? '')) {
+      return { cancelled: false, run: normalizeRun(this.config, repo, before) };
+    }
     await this.http.api({
       method: 'POST',
       path: `${repoPath(repo)}/actions/runs/${runId}/cancel`,
     });
     const after = await this.getRunRaw(repo, runId);
     return {
-      cancelled: !wasDone,
+      cancelled: true,
       run: normalizeRun(this.config, repo, after),
     };
   }
