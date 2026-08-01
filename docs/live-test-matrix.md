@@ -17,9 +17,19 @@ A captain-approved run against the disposable `eve/forgejo-axi-test` repository 
 - `PUT /issues/{index}/labels` accepts integer label ids on 15.0.5, so label replacement does not need a name-based fallback.
 - `milestone: 0` clears an issue's milestone rather than erroring, on both hosts.
 
+`pr merge --expected-head` with a stale head was refused with `HEAD_CHANGED` on both hosts, and the pull request was still unmerged afterwards — the race guard proven against real servers rather than a fake one.
+
 The `state`, `label`, `assignee`, and `milestone` filters each demonstrably narrowed the returned set — the assertion that matters, because Forgejo answers an unrecognised filter with an unfiltered list rather than an error. `issue comment` against a real pull request number landed in that pull request's discussion, with Forgejo setting `pull_request_url` on the resulting comment.
 
 Both runs deleted every issue, pull request, branch, label, and milestone they created, and both repositories were verified empty afterwards. Note that `status` reports `authenticated: false` for a token lacking `read:user` even when that token is fully able to perform repository and issue work; the auth probe reflects one scope, not overall usability.
+
+## Running a lane
+
+`npm run test:live -- 15` or `npm run test:live -- 16`. It is deliberately outside `npm run check`.
+
+Endpoints and tokens come from the environment, never from the script: `FORGEJO_BASE_URL`/`FORGEJO_TOKEN` for the 16 lane and `FORGEJO_15_BASE_URL`/`FORGEJO_15_TOKEN` for the 15 lane, so the two lanes cannot share a credential. This repository supplies them from a sops-encrypted `.env.json` loaded by mise; the file is tracked because every value in it is ciphertext.
+
+Two independent guards run before anything is written. The harness targets `FORGEJO_LIVE_REPO` rather than the ordinary `FORGEJO_REPOSITORY`, so everyday configuration cannot arm it by accident, and it refuses unless the host that actually answered reports the version its lane expects — pointing a run at the wrong host is the failure that cannot be undone. Both guards exit `2` without mutating. The harness redacts the token from everything it prints, creates a uniquely named branch, and deletes every object it created on the way out.
 
 Each lane should receive an explicit base URL, repository, host-scoped token secret, expected CA, and expected major/minor through protected CI environment variables. The harness should create a unique branch and PR only inside a pre-provisioned disposable repository, prove an expected-head race, delete its branch when safe, redact all captured traffic, and fail before mutation if the host identity or repository allowlist differs.
 

@@ -3,3 +3,7 @@ node_modules/
 dist/
 coverage/
 *.tgz
+
+# .env.json is sops-encrypted at rest and tracked on purpose, so it has to be
+# un-ignored explicitly — a global ignore rule would otherwise drop it.
+!.env.json
