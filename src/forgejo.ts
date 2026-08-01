@@ -59,6 +59,13 @@ interface ApiBranch {
   status_check_contexts?: string[];
 }
 
+interface ApiLabel {
+  id?: number;
+  name?: string;
+  color?: string;
+  description?: string;
+}
+
 export interface RepositoryRef {
   owner: string;
   name: string;
@@ -80,6 +87,19 @@ export interface PullRequestIdentity {
   merge_commit_sha: string | null;
   merged_at: string | null;
   merged_by: string | null;
+}
+
+export interface LabelIdentity {
+  id: number;
+  name: string;
+  color: string;
+  description: string;
+  api_url: string;
+}
+
+export interface LabelInput {
+  color?: string;
+  description?: string;
 }
 
 type CheckState = 'none' | 'pending' | 'failure' | 'success';
@@ -456,6 +476,115 @@ export class ForgejoService {
     return { ...mergedProof(pull) };
   }
 
+  async listLabels(repo: RepositoryRef): Promise<Paginated<LabelIdentity>> {
+    const page = await this.http.paginate<ApiLabel>(`${repoPath(repo)}/labels`);
+    return {
+      ...page,
+      items: page.items.map((item) => normalizeLabel(this.config, repo, item)),
+    };
+  }
+
+  /** Resolve a repository label by name; shared by every name-addressed command. */
+  async resolveLabel(
+    repo: RepositoryRef,
+    name: string,
+  ): Promise<LabelIdentity> {
+    return requireLabel(await this.listLabels(repo), repo, name);
+  }
+
+  async createLabel(
+    repo: RepositoryRef,
+    name: string,
+    input: LabelInput,
+  ): Promise<Record<string, unknown>> {
+    const page = await this.listLabels(repo);
+    const existing = matchLabel(page, repo, name);
+    if (existing) {
+      return {
+        created: false,
+        ...(await this.applyLabel(repo, existing, input)),
+      };
+    }
+    if (!page.complete) throw labelSearchIncomplete(page);
+    const response = await this.http.api<ApiLabel>({
+      method: 'POST',
+      path: `${repoPath(repo)}/labels`,
+      body: {
+        name,
+        color: input.color ?? DEFAULT_LABEL_COLOR,
+        description: input.description ?? '',
+      },
+    });
+    return {
+      created: true,
+      updated: false,
+      label: normalizeLabel(this.config, repo, response.data),
+    };
+  }
+
+  async editLabel(
+    repo: RepositoryRef,
+    name: string,
+    input: LabelInput & { name?: string },
+  ): Promise<Record<string, unknown>> {
+    const page = await this.listLabels(repo);
+    const label = requireLabel(page, repo, name);
+    if (input.name !== undefined && input.name !== label.name) {
+      if (page.items.some((other) => other.name === input.name)) {
+        throw new ForgejoAxiError(
+          `Repository already has a label named ${input.name}`,
+          'LABEL_EXISTS',
+          {
+            details: { name: input.name },
+            suggestions: [labelListHint(repo)],
+            usage: true,
+          },
+        );
+      }
+      if (!page.complete) throw labelSearchIncomplete(page);
+    }
+    return this.applyLabel(repo, label, input);
+  }
+
+  async deleteLabel(
+    repo: RepositoryRef,
+    name: string,
+  ): Promise<Record<string, unknown>> {
+    const label = await this.resolveLabel(repo, name);
+    await this.http.api({
+      method: 'DELETE',
+      path: `${repoPath(repo)}/labels/${label.id}`,
+    });
+    return { deleted: true, label };
+  }
+
+  private async applyLabel(
+    repo: RepositoryRef,
+    label: LabelIdentity,
+    input: LabelInput & { name?: string },
+  ): Promise<Record<string, unknown>> {
+    const patch: Record<string, unknown> = {};
+    if (input.name !== undefined && input.name !== label.name)
+      patch['name'] = input.name;
+    if (input.color !== undefined && input.color !== label.color)
+      patch['color'] = input.color;
+    if (
+      input.description !== undefined &&
+      input.description !== label.description
+    )
+      patch['description'] = input.description;
+    if (Object.keys(patch).length === 0) return { updated: false, label };
+    const response = await this.http.api<ApiLabel>({
+      method: 'PATCH',
+      path: `${repoPath(repo)}/labels/${label.id}`,
+      body: patch,
+    });
+    return {
+      updated: true,
+      label: normalizeLabel(this.config, repo, response.data),
+    };
+  }
+
   private async checksForPull(
     repo: RepositoryRef,
     pull: PullRequestIdentity,
@@ -696,6 +825,91 @@ function normalizePull(
     merged_at: pull.merged_at ?? null,
     merged_by: pull.merged_by?.login ?? null,
   };
+}
+
+const DEFAULT_LABEL_COLOR = '#ededed';
+
+function normalizeLabel(
+  config: ConnectionConfig,
+  repo: RepositoryRef,
+  label: ApiLabel,
+): LabelIdentity {
+  if (!Number.isSafeInteger(label.id) || !label.id || label.id < 1) {
+    throw new ForgejoAxiError(
+      'Forgejo label response omitted a valid id',
+      'INVALID_RESPONSE',
+    );
+  }
+  return {
+    id: label.id,
+    name: label.name ?? '',
+    color: normalizeLabelColor(label.color),
+    description: label.description ?? '',
+    api_url: `${canonicalRepoApiUrl(config, repo)}/labels/${label.id}`,
+  };
+}
+
+export function normalizeLabelColor(raw: string | undefined): string {
+  const value = (raw ?? '').trim();
+  return /^#?[0-9a-f]{6}$/i.test(value)
+    ? `#${value.replace(/^#/, '').toLowerCase()}`
+    : value;
+}
+
+function matchLabel(
+  page: Paginated<LabelIdentity>,
+  repo: RepositoryRef,
+  name: string,
+): LabelIdentity | null {
+  const matches = page.items.filter((label) => label.name === name);
+  if (matches.length > 1) {
+    throw new ForgejoAxiError(
+      `Repository has ${matches.length} labels named ${name}`,
+      'LABEL_AMBIGUOUS',
+      {
+        details: { name, ids: matches.map((label) => label.id) },
+        suggestions: [labelListHint(repo)],
+        usage: true,
+      },
+    );
+  }
+  return matches[0] ?? null;
+}
+
+function requireLabel(
+  page: Paginated<LabelIdentity>,
+  repo: RepositoryRef,
+  name: string,
+): LabelIdentity {
+  const label = matchLabel(page, repo, name);
+  if (label) return label;
+  if (!page.complete) throw labelSearchIncomplete(page);
+  throw new ForgejoAxiError(
+    `Repository has no label named ${name}`,
+    'LABEL_NOT_FOUND',
+    {
+      details: { name },
+      suggestions: [labelListHint(repo)],
+      usage: true,
+    },
+  );
+}
+
+function labelSearchIncomplete(
+  page: Paginated<LabelIdentity>,
+): ForgejoAxiError {
+  return new ForgejoAxiError(
+    'Label search reached the pagination safety ceiling',
+    'PAGINATION_INCOMPLETE',
+    {
+      details: { pages: page.pages, fetched: page.items.length },
+      suggestions: ['Reduce the repository label count and retry'],
+    },
+  );
+}
+
+function labelListHint(repo: RepositoryRef): string {
+  return `Run \`forgejo-axi label list --repo ${repo.fullName}\``;
 }
 
 function latestStatuses(input: ApiStatus[]): NormalizedStatus[] {

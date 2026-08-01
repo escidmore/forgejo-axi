@@ -6,6 +6,7 @@ import { json, startServer, type FakeServer } from './server.js';
 interface Fixture {
   version: Record<string, unknown>;
   swagger: Record<string, unknown>;
+  labels: Array<Record<string, unknown>>;
   pull: Record<string, unknown>;
 }
 
@@ -675,6 +676,281 @@ describe('CLI contract', () => {
       head: { ref: 'fix/race', sha: 'abc123' },
       base: { ref: 'main' },
     });
+  });
+});
+
+describe('label command family', () => {
+  async function labelServer(
+    labels: Array<Record<string, unknown>>,
+  ): Promise<FakeServer> {
+    const server = await startServer((_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      if (!url.pathname.startsWith('/api/v1/repos/acme/widgets/labels'))
+        return json(response, 404, { message: 'not found' });
+      if (recorded.method === 'GET' && url.pathname.endsWith('/labels')) {
+        const page = Number(url.searchParams.get('page') ?? '1');
+        return json(response, 200, page === 1 ? labels : []);
+      }
+      if (recorded.method === 'DELETE') {
+        response.statusCode = 204;
+        response.end();
+        return;
+      }
+      const body = parseJson<Record<string, unknown>>(recorded.body);
+      const existing = labels.find((label) =>
+        url.pathname.endsWith(`/${String(label['id'])}`),
+      );
+      return json(response, recorded.method === 'POST' ? 201 : 200, {
+        id: existing?.['id'] ?? 21,
+        name: 'new',
+        color: 'ededed',
+        description: '',
+        ...existing,
+        ...body,
+      });
+    });
+    servers.push(server);
+    return server;
+  }
+
+  it.each([15, 16] as const)(
+    'lists Forgejo %i labels as TOON and JSON',
+    async (version) => {
+      const fixture = await loadFixture(version);
+      const server = await labelServer(fixture.labels);
+      const toon = await invoke([
+        'label',
+        'list',
+        '--repo',
+        'acme/widgets',
+        '--base-url',
+        server.baseUrl,
+      ]);
+      expect(toon.exitCode).toBeUndefined();
+      expect(toon.output).toContain('labels[3]');
+      expect(toon.output).toContain('bug');
+      expect(toon.output).toContain('fetched: 3');
+
+      const result = await invoke([
+        'label',
+        'list',
+        '--repo',
+        'acme/widgets',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      const output = parseJson<{
+        labels: Array<{ id: number; name: string; color: string }>;
+        page_info: { complete: boolean };
+      }>(result.output);
+      expect(output.labels).toHaveLength(3);
+      expect(output.labels[0]).toMatchObject({
+        id: 7,
+        name: 'bug',
+        color: '#d73a4a',
+      });
+      expect(output.page_info.complete).toBe(true);
+    },
+  );
+
+  it('reports an empty label taxonomy without an error', async () => {
+    const server = await labelServer([]);
+    const result = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    expect(parseJson(result.output)).toMatchObject({
+      labels: [],
+      page_info: { fetched: 0, complete: true },
+    });
+  });
+
+  it.each([15, 16] as const)(
+    'creates, edits, and deletes a Forgejo %i label by name',
+    async (version) => {
+      const fixture = await loadFixture(version);
+      const server = await labelServer(fixture.labels);
+      const created = await invoke([
+        'label',
+        'create',
+        '--repo',
+        'acme/widgets',
+        'triage',
+        '--color',
+        'FCA13A',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      expect(created.exitCode).toBeUndefined();
+      expect(parseJson(created.output)).toMatchObject({
+        created: true,
+        updated: false,
+        label: { name: 'triage', color: '#fca13a' },
+      });
+
+      const edited = await invoke([
+        'label',
+        'edit',
+        '--repo',
+        'acme/widgets',
+        'bug',
+        '--description',
+        'Broken behaviour',
+        '--base-url',
+        server.baseUrl,
+      ]);
+      expect(edited.exitCode).toBeUndefined();
+      expect(edited.output).toContain('updated: true');
+      expect(edited.output).toContain('Broken behaviour');
+
+      const deleted = await invoke([
+        'label',
+        'delete',
+        '--repo',
+        'acme/widgets',
+        'wontfix',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      expect(deleted.exitCode).toBeUndefined();
+      expect(parseJson(deleted.output)).toMatchObject({
+        deleted: true,
+        label: { id: 9, name: 'wontfix' },
+      });
+      expect(
+        server.requests.find((request) => request.method === 'DELETE')?.url,
+      ).toContain('/labels/9');
+    },
+  );
+
+  it('rejects an unknown label name with the documented exit code', async () => {
+    const server = await labelServer([
+      { id: 7, name: 'bug', color: 'd73a4a', description: '' },
+    ]);
+    const result = await invoke([
+      'label',
+      'edit',
+      '--repo',
+      'acme/widgets',
+      'missing',
+      '--color',
+      '#ffffff',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      code: 'LABEL_NOT_FOUND',
+      details: { name: 'missing' },
+      help: ['Run `forgejo-axi label list --repo acme/widgets`'],
+    });
+  });
+
+  it('rejects an ambiguous label name with a usage hint', async () => {
+    const server = await labelServer([
+      { id: 7, name: 'bug', color: 'd73a4a', description: '' },
+      { id: 11, name: 'bug', color: 'ffffff', description: '' },
+    ]);
+    const result = await invoke([
+      'label',
+      'delete',
+      '--repo',
+      'acme/widgets',
+      'bug',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      code: 'LABEL_AMBIGUOUS',
+      details: { name: 'bug', ids: [7, 11] },
+    });
+    expect(server.requests.some((request) => request.method === 'DELETE')).toBe(
+      false,
+    );
+  });
+
+  it('rejects a malformed color before contacting the server', async () => {
+    const result = await invoke([
+      'label',
+      'create',
+      '--repo',
+      'acme/widgets',
+      'bug',
+      '--color',
+      'reddish',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('code: VALIDATION_ERROR');
+    expect(result.output).toContain('six-digit hex color');
+  });
+
+  it('builds canonical label API URLs and redacts the token on failure', async () => {
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.method === 'GET') {
+        return json(response, 200, [
+          {
+            id: 7,
+            name: 'bug',
+            color: 'd73a4a',
+            description: '',
+            url: 'https://evil.example/api/stolen',
+          },
+        ]);
+      }
+      return json(response, 500, {
+        message: `upstream rejected token ${recorded.headers['authorization'] ?? ''}`,
+      });
+    });
+    servers.push(server);
+    const listed = await invoke(
+      [
+        'label',
+        'list',
+        '--repo',
+        'acme/widgets',
+        '--base-url',
+        server.baseUrl,
+        '--token-env',
+        'TOKEN',
+        '--json',
+      ],
+      { TOKEN: 'super-secret-token' },
+    );
+    expect(
+      parseJson<{ labels: Array<{ api_url: string }> }>(listed.output).labels[0]
+        ?.api_url,
+    ).toBe(`${server.baseUrl}/api/v1/repos/acme/widgets/labels/7`);
+    expect(listed.output).not.toContain('evil.example');
+
+    const failed = await invoke(
+      [
+        'label',
+        'delete',
+        '--repo',
+        'acme/widgets',
+        'bug',
+        '--base-url',
+        server.baseUrl,
+        '--token-env',
+        'TOKEN',
+        '--json',
+      ],
+      { TOKEN: 'super-secret-token' },
+    );
+    expect(failed.exitCode).toBe(1);
+    expect(failed.output).not.toContain('super-secret-token');
   });
 });
 

@@ -44,6 +44,17 @@ forgejo-axi pr merged --repo owner/repo 42
 
 Lists fetch up to 100 Forgejo pages of 50 rows (5000 rows) and report completeness in `page_info`. TOON displays 30 rows by default and hints at `--full` when truncated; JSON displays every fetched row, and `--limit` is rejected with `--json`. Pull request lists use four fields by default and accept `--fields LIST|all`.
 
+## Label taxonomy
+
+```console
+forgejo-axi label list --repo owner/repo --full
+forgejo-axi label create --repo owner/repo bug --color '#d73a4a' --description 'Something is broken'
+forgejo-axi label edit --repo owner/repo bug --name defect --color '#b60205'
+forgejo-axi label delete --repo owner/repo wontfix
+```
+
+Labels are addressed by name; the numeric id is resolved for you. An unknown name is `LABEL_NOT_FOUND` and a duplicated name is `LABEL_AMBIGUOUS`, both usage errors that point at `label list`. `label create` reconciles an existing label of that name instead of duplicating it, and `label edit --name` renames in place so the label keeps its issue assignments.
+
 ## Raw API and capabilities
 
 ```console
