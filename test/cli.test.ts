@@ -881,6 +881,28 @@ describe('label command family', () => {
     );
   });
 
+  it('addresses a dash-prefixed label name after a -- terminator', async () => {
+    const server = await labelServer([
+      { id: 7, name: '-blocked', color: 'd73a4a', description: '' },
+    ]);
+    const result = await invoke([
+      'label',
+      'delete',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+      '--',
+      '-blocked',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    expect(parseJson(result.output)).toMatchObject({
+      deleted: true,
+      label: { id: 7, name: '-blocked' },
+    });
+  });
+
   it('rejects a malformed color before contacting the server', async () => {
     const result = await invoke([
       'label',

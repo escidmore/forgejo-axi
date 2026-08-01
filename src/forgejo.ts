@@ -64,6 +64,7 @@ interface ApiLabel {
   name?: string;
   color?: string;
   description?: string;
+  is_archived?: boolean;
 }
 
 export interface RepositoryRef {
@@ -94,6 +95,7 @@ export interface LabelIdentity {
   name: string;
   color: string;
   description: string;
+  is_archived: boolean;
   api_url: string;
 }
 
@@ -499,13 +501,13 @@ export class ForgejoService {
   ): Promise<Record<string, unknown>> {
     const page = await this.listLabels(repo);
     const existing = matchLabel(page, repo, name);
+    if (!page.complete) throw labelSearchIncomplete(page);
     if (existing) {
       return {
         created: false,
         ...(await this.applyLabel(repo, existing, input)),
       };
     }
-    if (!page.complete) throw labelSearchIncomplete(page);
     const response = await this.http.api<ApiLabel>({
       method: 'POST',
       path: `${repoPath(repo)}/labels`,
@@ -529,19 +531,20 @@ export class ForgejoService {
   ): Promise<Record<string, unknown>> {
     const page = await this.listLabels(repo);
     const label = requireLabel(page, repo, name);
-    if (input.name !== undefined && input.name !== label.name) {
-      if (page.items.some((other) => other.name === input.name)) {
-        throw new ForgejoAxiError(
-          `Repository already has a label named ${input.name}`,
-          'LABEL_EXISTS',
-          {
-            details: { name: input.name },
-            suggestions: [labelListHint(repo)],
-            usage: true,
-          },
-        );
-      }
-      if (!page.complete) throw labelSearchIncomplete(page);
+    if (
+      input.name !== undefined &&
+      input.name !== label.name &&
+      page.items.some((other) => other.name === input.name)
+    ) {
+      throw new ForgejoAxiError(
+        `Repository already has a label named ${input.name}`,
+        'LABEL_EXISTS',
+        {
+          details: { name: input.name },
+          suggestions: [labelListHint(repo)],
+          usage: true,
+        },
+      );
     }
     return this.applyLabel(repo, label, input);
   }
@@ -574,6 +577,8 @@ export class ForgejoService {
     )
       patch['description'] = input.description;
     if (Object.keys(patch).length === 0) return { updated: false, label };
+    // Forgejo archives from the absence of is_archived, so every patch must resend it.
+    patch['is_archived'] = label.is_archived;
     const response = await this.http.api<ApiLabel>({
       method: 'PATCH',
       path: `${repoPath(repo)}/labels/${label.id}`,
@@ -843,6 +848,7 @@ function normalizeLabel(
     name: label.name ?? '',
     color: normalizeLabelColor(label.color),
     description: label.description ?? '',
+    is_archived: label.is_archived ?? false,
     api_url: `${canonicalRepoApiUrl(config, repo)}/labels/${label.id}`,
   };
 }
@@ -880,8 +886,9 @@ function requireLabel(
   name: string,
 ): LabelIdentity {
   const label = matchLabel(page, repo, name);
-  if (label) return label;
+  // An incomplete search cannot prove the match is the only one carrying the name.
   if (!page.complete) throw labelSearchIncomplete(page);
+  if (label) return label;
   throw new ForgejoAxiError(
     `Repository has no label named ${name}`,
     'LABEL_NOT_FOUND',

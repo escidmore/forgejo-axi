@@ -794,6 +794,38 @@ describe('label name resolution', () => {
     );
   });
 
+  it('refuses to mutate a match an incomplete search cannot prove unique', async () => {
+    const server = await ceilingServer();
+    const service = await serviceFor(server);
+    await expect(service.deleteLabel(repo, 'label-1')).rejects.toMatchObject({
+      code: 'PAGINATION_INCOMPLETE',
+    });
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(
+      true,
+    );
+  });
+
+  it('resends is_archived so a patch cannot silently unarchive', async () => {
+    const server = await labelServer([
+      {
+        id: 7,
+        name: 'bug',
+        color: 'd73a4a',
+        description: '',
+        is_archived: true,
+      },
+    ]);
+    const service = await serviceFor(server);
+    await service.editLabel(repo, 'bug', { color: '#b60205' });
+    const patch = server.requests.find(
+      (request) => request.method === 'PATCH',
+    )!;
+    expect(parseJson(patch.body)).toEqual({
+      color: '#b60205',
+      is_archived: true,
+    });
+  });
+
   it('reconciles an existing label instead of creating a duplicate', async () => {
     const server = await labelServer(labels);
     const service = await serviceFor(server);
@@ -803,7 +835,10 @@ describe('label name resolution', () => {
       (request) => request.method === 'PATCH',
     )!;
     expect(patch.url).toContain('/labels/7');
-    expect(parseJson(patch.body)).toEqual({ color: '#b60205' });
+    expect(parseJson(patch.body)).toEqual({
+      color: '#b60205',
+      is_archived: false,
+    });
     expect(server.requests.some((request) => request.method === 'POST')).toBe(
       false,
     );
