@@ -94,6 +94,28 @@ describe('normalized checks', () => {
       passes: true,
     },
     {
+      name: 'required glob folds several matches to the worst failing state',
+      statuses: [
+        { context: 'ci/unit', status: 'success' },
+        { context: 'ci/lint', status: 'failure' },
+      ],
+      required: ['ci/*'],
+      state: 'failure',
+      requiredState: 'failure',
+      passes: false,
+    },
+    {
+      name: 'required glob folds several matches to the worst pending state',
+      statuses: [
+        { context: 'ci/unit', status: 'success' },
+        { context: 'ci/lint', status: 'pending' },
+      ],
+      required: ['ci/*'],
+      state: 'pending',
+      requiredState: 'pending',
+      passes: false,
+    },
+    {
       name: 'treats leading bang as a literal, not minimatch negation',
       statuses: [{ context: 'other', status: 'success' }],
       required: ['!ci'],

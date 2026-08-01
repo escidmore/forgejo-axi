@@ -16,6 +16,19 @@ The status a command reports when the capability it needs is absent from the
 connected Forgejo. Unsupported is a distinct, successful outcome — not a failure
 and not an error. Example: Actions log routes on Forgejo 15.0.5.
 
+## Check
+
+A single commit status reported against a pull request's head SHA, identified by
+its context string. Forgejo's API calls these commit statuses; the CLI calls them
+Checks. Where several statuses share one context, only the newest counts.
+
+## Required check
+
+A branch-protection pattern that Checks must satisfy before a pull request passes.
+Patterns are globs, not exact names — one pattern may match several Checks, in
+which case the worst state wins, or match none at all, which is the distinct state
+`missing`.
+
 ## Run
 
 A single execution of an Actions workflow, grouping one or more Jobs. Exists as an
