@@ -102,6 +102,9 @@ See [`docs/contract.md`](docs/contract.md) for the machine-output compatibility 
 ```console
 npm run check
 npm pack --dry-run
+npm run verify
 ```
 
 Tests use local fake HTTP/HTTPS servers and versioned Forgejo 15/16 fixtures; they do not require or mutate a live Forgejo instance. [`docs/live-test-matrix.md`](docs/live-test-matrix.md) defines the separate, future opt-in 15.0.5 and 16.x lanes.
+
+`npm run verify` is the completion check: it clones the committed tree into a temporary directory, runs `npm ci`, `npm run check`, and `npm pack --dry-run` there, installs the result into a throwaway prefix to run `--help`, `--version`, and the unconfigured home view, and installs the agent skill into a throwaway agent home to prove an installer finds it by the name `forgejo-axi`. It refuses to run against a dirty working tree, because it clones HEAD and can only speak for that commit. It reaches npm for dependencies and the skill installer, never a Forgejo host, and writes nothing outside its temporary directory apart from the shared npm cache.
