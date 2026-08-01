@@ -5,6 +5,7 @@ import {
 } from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import { text } from 'node:stream/consumers';
 import { main } from '../src/cli.js';
 
 export interface RecordedRequest {
@@ -27,21 +28,16 @@ export async function startServer(
     recorded: RecordedRequest,
   ) => void | Promise<void>,
   prefix = '',
-  host = '127.0.0.1',
 ): Promise<FakeServer> {
   const requests: RecordedRequest[] = [];
   let handlerError: unknown;
   const server = createServer(async (request, response) => {
     try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
       const recorded: RecordedRequest = {
         method: request.method ?? 'GET',
         url: request.url ?? '/',
         headers: request.headers,
-        body: Buffer.concat(chunks).toString('utf8'),
+        body: await text(request),
       };
       requests.push(recorded);
       await handler(request, response, recorded);
@@ -52,14 +48,13 @@ export async function startServer(
       );
     }
   });
-  server.listen(0, host);
+  server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('missing server address');
-  const urlHost = host.includes(':') ? `[${host}]` : host;
   return {
-    baseUrl: `http://${urlHost}:${address.port}${prefix}`,
+    baseUrl: `http://127.0.0.1:${address.port}${prefix}`,
     requests,
     close: async () => {
       server.close();
@@ -85,6 +80,17 @@ export const servers: FakeServer[] = [];
 export async function closeServers(): Promise<void> {
   process.exitCode = undefined;
   await Promise.all(servers.splice(0).map((server) => server.close()));
+}
+
+/** CLI connection flags for a fake-server test repository. */
+export function connection(server: FakeServer, json = true): string[] {
+  return [
+    '--repo',
+    'acme/widgets',
+    '--base-url',
+    server.baseUrl,
+    ...(json ? ['--json'] : []),
+  ];
 }
 
 export async function loadFixture<T>(version: 15 | 16): Promise<T> {
