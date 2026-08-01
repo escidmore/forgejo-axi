@@ -37,6 +37,9 @@ jobs:
   verify:
     name: Repository verification
     runs-on: ubuntu-latest
+    # The only job that downloads an uncached third-party CLI, so a registry
+    # stall here should fail rather than sit on the six-hour default.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
