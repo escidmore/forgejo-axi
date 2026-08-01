@@ -1,6 +1,6 @@
 # Future live-test matrix
 
-Live tests are deliberately absent from default CI. Enabling them requires captain-approved, isolated endpoints and least-privilege test repositories; tests must never target production repositories or infer an endpoint from local configuration.
+Live tests are deliberately absent from default CI. Enabling them requires user-approved, isolated endpoints and least-privilege test repositories; tests must never target production repositories or infer an endpoint from local configuration.
 
 | Lane             | Runtime  | Required assertions                                                                                 |
 | ---------------- | -------- | --------------------------------------------------------------------------------------------------- |
