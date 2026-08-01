@@ -21,6 +21,9 @@ jobs:
     name: Forgejo ${{ matrix.lane }}
     runs-on: ubuntu-latest
     environment: ${{ matrix.environment }}
+    # A hung lane would otherwise hold the concurrency group above for six
+    # hours, blocking every later dispatch from cleaning up after it.
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

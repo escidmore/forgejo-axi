@@ -15,8 +15,8 @@
 // harness reads its target from FORGEJO_LIVE_REPO rather than the ordinary
 // FORGEJO_REPOSITORY, so everyday configuration can never arm it by accident;
 // it refuses unless the host it actually reached reports the version the lane
-// expects; and it refuses unless that host resolves the armed repository to the
-// name and canonical URL it was given. Every guard exits 2 before writing
+// expects; and it refuses unless the host's own response for the armed
+// repository names that repository back. Every guard exits 2 before writing
 // anything. Pointing this at a real repository is unrecoverable.
 import { Buffer } from 'node:buffer';
 import { execFile, execFileSync } from 'node:child_process';
@@ -59,7 +59,10 @@ const REPO = required('FORGEJO_LIVE_REPO');
 // CI supplies the expected major.minor alongside the endpoint it belongs to, so
 // a lane pointed at a new host is told what that host must report rather than
 // inheriting an expectation compiled in here.
-const EXPECT_VERSION = process.env['FORGEJO_EXPECT_VERSION'] ?? LANE.expect;
+// `||`, not `??`: an unset CI variable arrives as an empty string, and an empty
+// expectation would compare equal to an empty reported version — the guard below
+// would pass against a host that never said what it was.
+const EXPECT_VERSION = process.env['FORGEJO_EXPECT_VERSION'] || LANE.expect;
 const CA_FILE = process.env['FORGEJO_CA_FILE'];
 
 const CONN = [
@@ -219,22 +222,15 @@ if (majorMinor !== EXPECT_VERSION) {
   process.exit(2);
 }
 // The right host is still the wrong target if the armed repository is not the
-// one the host serves under that name. Prove it resolves before writing to it.
-let liveRepo;
-try {
-  liveRepo = cli(['repo', 'view', '--repo', REPO]).repository;
-} catch (error) {
+// one it serves under that name. This asks the host directly rather than going
+// through `repo view`, whose `full_name` falls back to the name we supplied and
+// whose `url` is rebuilt from our own base URL — both would agree with us no
+// matter what the host actually holds.
+const liveRepo = await raw('GET', `repos/${REPO}`);
+if (liveRepo.status !== 200 || liveRepo.data?.full_name !== REPO) {
   console.error(
-    `Refusing to mutate: ${BASE_URL} could not resolve ${REPO} — ${String(error.message).slice(0, 200)}`,
-  );
-  process.exit(2);
-}
-if (
-  liveRepo.full_name !== REPO ||
-  liveRepo.url !== `${BASE_URL.replace(/\/$/, '')}/${REPO}`
-) {
-  console.error(
-    `Refusing to mutate: ${BASE_URL} answered for ${liveRepo.full_name} at ${liveRepo.url}, expected ${REPO}`,
+    `Refusing to mutate: ${BASE_URL} answered ${liveRepo.status} for ${REPO}` +
+      `${liveRepo.data?.full_name ? ` and named it ${liveRepo.data.full_name}` : ''}`,
   );
   process.exit(2);
 }
@@ -255,6 +251,9 @@ const created = {
 
 // Every probe branch carries the per-run prefix, so cleanup can never reach a
 // branch that predates this run.
+// Throwing rather than returning a status keeps a failed branch from surfacing
+// later as an unrelated mystery: every assertion downstream of a probe branch
+// depends on it existing.
 async function probeBranch(name, from) {
   const response = await raw('POST', `repos/${REPO}/contents/${name}.txt`, {
     content: Buffer.from(`probe ${name}\n`).toString('base64'),
@@ -262,7 +261,12 @@ async function probeBranch(name, from) {
     ...(from === undefined ? {} : { branch: from }),
     new_branch: name,
   });
-  if (response.status === 201) created.branches.push(name);
+  if (response.status !== 201) {
+    throw new Error(
+      `could not create probe branch ${name} => ${response.status}`,
+    );
+  }
+  created.branches.push(name);
   return response;
 }
 
@@ -607,8 +611,7 @@ try {
     content: Buffer.from('base\n').toString('base64'),
     message: 'live: seed base',
   });
-  const branched = await probeBranch(BRANCH);
-  ok('create a unique probe branch', branched.status === 201, BRANCH);
+  await probeBranch(BRANCH);
 
   const pr = cli([
     'pr',
@@ -802,6 +805,7 @@ try {
   ok(
     'expected-head merges when the head matches',
     Boolean(merge.proof) && afterMerge.data?.merged === true,
+    String(merge.code ?? 'merged'),
   );
   ok(
     'pr merged proves the merge independently',
@@ -889,6 +893,11 @@ try {
     head: adoptBranch,
     base: 'main',
   });
+  if (!Number.isInteger(outOfBand.data?.number)) {
+    throw new Error(
+      `could not open a pull request out of band => ${outOfBand.status}`,
+    );
+  }
   created.pulls.push(outOfBand.data.number);
   const adopted = cli([
     'pr',
@@ -1100,7 +1109,8 @@ try {
   );
   ok(
     'an ambiguous label name reports both ids',
-    ambiguous.code === 'LABEL_AMBIGUOUS' &&
+    duplicated.length === 2 &&
+      ambiguous.code === 'LABEL_AMBIGUOUS' &&
       duplicated.every((id) => ambiguous.details?.ids?.includes(id)),
     `code=${ambiguous.code} ids=${JSON.stringify(ambiguous.details?.ids)}`,
   );
@@ -1111,7 +1121,10 @@ try {
     name: 'live-archived',
     color: '#ededed',
   });
-  if (archived.data?.id) created.labelIds.push(archived.data.id);
+  if (!Number.isInteger(archived.data?.id)) {
+    throw new Error(`could not seed an archived label => ${archived.status}`);
+  }
+  created.labelIds.push(archived.data.id);
   await raw('PATCH', `repos/${REPO}/labels/${archived.data.id}`, {
     is_archived: true,
   });
@@ -1207,13 +1220,20 @@ try {
   if (created.milestone)
     await discard('DELETE', `repos/${REPO}/milestones/${created.milestone}`);
   // Protection has to go before the branch it protects, or the branch survives.
-  if (created.protection)
-    await discard(
+  // A leak here is the one the next run cannot clean up for itself, so it is
+  // reported rather than swallowed the way the label teardown is.
+  const leaked = [];
+  if (created.protection) {
+    const gone = await discard(
       'DELETE',
       `repos/${REPO}/branch_protections/${created.protection}`,
     );
-  for (const branch of created.branches)
-    await discard('DELETE', `repos/${REPO}/branches/${branch}`);
+    if (gone.status !== 204) leaked.push(`protection ${created.protection}`);
+  }
+  for (const branch of created.branches) {
+    const gone = await discard('DELETE', `repos/${REPO}/branches/${branch}`);
+    if (gone.status !== 204) leaked.push(`branch ${branch}`);
+  }
   // A merged branch leaves its file behind on the base. Every name carries the
   // per-run branch prefix, so cleanup can never reach a file that predates this
   // run.
@@ -1237,6 +1257,11 @@ try {
     'cleanup removed every created pull request',
     removedPulls === created.pulls.length,
     `${removedPulls}/${created.pulls.length}`,
+  );
+  ok(
+    'cleanup removed every branch and its protection',
+    leaked.length === 0,
+    leaked.join(', ') || `${created.branches.length} branches`,
   );
 }
 
