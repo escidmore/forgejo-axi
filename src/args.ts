@@ -9,6 +9,9 @@ export interface ParsedArgs {
   positionals: string[];
 }
 
+// Hand-rolled on purpose: node:util's parseArgs expands `-abc` into per-letter
+// short options and accepts a bare `-` as a positional, so its rejections name
+// tokens the user never typed. This CLI's contract is to echo flags as typed.
 export function parseArgs(
   args: readonly string[],
   spec: FlagSpec,
@@ -16,9 +19,6 @@ export function parseArgs(
 ): ParsedArgs {
   const flags: Record<string, string | boolean> = {};
   const positionals: string[] = [];
-  const valid = Object.keys(spec).sort((left, right) =>
-    left.localeCompare(right),
-  );
 
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
@@ -38,7 +38,7 @@ export function parseArgs(
     const kind = spec[name];
     if (!kind) {
       throw usageError(`Unknown flag ${name} for \`${command}\``, [
-        `Valid flags: ${valid.join(', ') || 'none'}`,
+        `Valid flags: ${Object.keys(spec).sort().join(', ') || 'none'}`,
         `Run \`forgejo-axi ${command} --help\``,
       ]);
     }
@@ -94,19 +94,13 @@ export function requireOnePositional(
   parsed: ParsedArgs,
   label: string,
 ): string {
-  if (parsed.positionals.length !== 1) {
-    throw usageError(
-      parsed.positionals.length === 0
-        ? `${label} is required`
-        : `Unexpected arguments: ${parsed.positionals.slice(1).join(' ')}`,
-      [`Run \`forgejo-axi ${parsed.command} --help\``],
-    );
+  const [value, ...extra] = parsed.positionals;
+  const help = [`Run \`forgejo-axi ${parsed.command} --help\``];
+  if (extra.length > 0) {
+    throw usageError(`Unexpected arguments: ${extra.join(' ')}`, help);
   }
-  const value = parsed.positionals[0];
   if (!value) {
-    throw usageError(`${label} is required`, [
-      `Run \`forgejo-axi ${parsed.command} --help\``,
-    ]);
+    throw usageError(`${label} is required`, help);
   }
   return value;
 }

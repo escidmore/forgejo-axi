@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
+  connection,
   invoke,
   json,
   loadFixture as load,
@@ -137,16 +138,6 @@ async function unsupportedServer(): Promise<FakeServer> {
   });
   servers.push(server);
   return server;
-}
-
-function connection(server: FakeServer, json = true): string[] {
-  return [
-    '--repo',
-    'acme/widgets',
-    '--base-url',
-    server.baseUrl,
-    ...(json ? ['--json'] : []),
-  ];
 }
 
 describe('run command family', () => {

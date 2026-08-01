@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
+  connection,
   invoke,
   json,
   loadFixture as load,
@@ -63,9 +64,7 @@ interface DiffOutput {
 /** Only review 502 carries inline comments, matching both fixtures. */
 const COMMENTED_REVIEW = 502;
 
-afterEach(async () => {
-  await closeServers();
-});
+afterEach(closeServers);
 
 async function reviewServer(world: ReviewWorld): Promise<FakeServer> {
   // No swagger route: neither subcommand probes capabilities, so a host that
@@ -97,16 +96,6 @@ async function reviewServer(world: ReviewWorld): Promise<FakeServer> {
   });
   servers.push(server);
   return server;
-}
-
-function connection(server: FakeServer, asJson = true): string[] {
-  return [
-    '--repo',
-    'acme/widgets',
-    '--base-url',
-    server.baseUrl,
-    ...(asJson ? ['--json'] : []),
-  ];
 }
 
 /** Reviews without inline comments, so the row count is the only variable. */

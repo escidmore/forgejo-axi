@@ -13,7 +13,6 @@ export interface HttpResponse<T> {
 export interface RequestInput {
   method?: string;
   path?: string;
-  url?: URL;
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   accept?: string;
@@ -37,7 +36,7 @@ const PAGE_SIZE = 50;
 export class ForgejoHttpClient {
   constructor(private readonly config: ConnectionConfig) {}
 
-  api<T>(input: Omit<RequestInput, 'url'>): Promise<HttpResponse<T>> {
+  api<T>(input: RequestInput): Promise<HttpResponse<T>> {
     const path = input.path ?? '';
     return this.request<T>({
       ...input,
@@ -51,7 +50,7 @@ export class ForgejoHttpClient {
     });
   }
 
-  root<T>(input: Omit<RequestInput, 'url'>): Promise<HttpResponse<T>> {
+  root<T>(input: RequestInput): Promise<HttpResponse<T>> {
     const path = input.path ?? '';
     return this.request<T>({
       ...input,
@@ -59,70 +58,76 @@ export class ForgejoHttpClient {
     });
   }
 
-  async paginate<T>(
+  paginate<T>(
     path: string,
     query: Record<string, string | number | boolean | undefined> = {},
   ): Promise<Paginated<T>> {
-    const items: T[] = [];
-    let total: number | null = null;
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await this.api<T[]>({
-        path,
-        query: { ...query, page, limit: PAGE_SIZE },
-      });
+    return this.paginateWith<T, unknown>(path, query, true, (response) => {
       if (!Array.isArray(response.data)) {
         throw new ForgejoAxiError(
           'Forgejo returned a non-array pagination response',
           'INVALID_RESPONSE',
         );
       }
-      const headerTotal = parseTotal(response.headers['x-total-count']);
-      if (headerTotal !== null) total = headerTotal;
-      items.push(...response.data);
-      const linkHasNext = hasNextLink(response.headers['link']);
-      const doneByTotal = total !== null && items.length >= total;
-      // An empty page is also a short page, so this covers both stop signals.
-      const doneByShortPage = response.data.length < PAGE_SIZE;
-      if (doneByTotal || (!linkHasNext && doneByShortPage)) {
-        return {
-          items,
-          complete: true,
-          pages: page,
-          total: total ?? items.length,
-        };
-      }
-    }
-    return { items, complete: false, pages: MAX_PAGES, total };
+      return {
+        entries: response.data as T[],
+        total: parseTotal(response.headers['x-total-count']),
+      };
+    });
   }
 
   /** Like `paginate`, for `GET /actions/runs`, which wraps rows as `{workflow_runs,total_count}`. */
-  async paginateEnvelope<T>(
+  paginateEnvelope<T>(
     path: string,
     query: Record<string, string | number | boolean | undefined> = {},
   ): Promise<Paginated<T>> {
-    const items: T[] = [];
-    let total: number | null = null;
-    for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await this.api<{
-        workflow_runs?: T[];
-        total_count?: number;
-      }>({
-        path,
-        query: { ...query, page, limit: PAGE_SIZE },
-      });
-      const entries = response.data.workflow_runs;
-      if (!Array.isArray(entries)) {
+    return this.paginateWith<
+      T,
+      { workflow_runs?: T[]; total_count?: number } | null
+    >(path, query, false, (response) => {
+      const data = response.data;
+      if (!data || !Array.isArray(data.workflow_runs)) {
         throw new ForgejoAxiError(
           'Forgejo returned a malformed paginated response',
           'INVALID_RESPONSE',
         );
       }
-      if (typeof response.data.total_count === 'number')
-        total = response.data.total_count;
-      items.push(...entries);
+      return {
+        entries: data.workflow_runs,
+        total: typeof data.total_count === 'number' ? data.total_count : null,
+      };
+    });
+  }
+
+  /**
+   * The array shape trusts a Link rel="next" over a short page; the envelope
+   * shape (`useLink` false) stops on a short page alone — exactly how the two
+   * loops behaved before they were merged.
+   */
+  private async paginateWith<T, R>(
+    path: string,
+    query: Record<string, string | number | boolean | undefined>,
+    useLink: boolean,
+    extract: (response: HttpResponse<R>) => {
+      entries: T[];
+      total: number | null;
+    },
+  ): Promise<Paginated<T>> {
+    const items: T[] = [];
+    let total: number | null = null;
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const response = await this.api<R>({
+        path,
+        query: { ...query, page, limit: PAGE_SIZE },
+      });
+      const extracted = extract(response);
+      if (extracted.total !== null) total = extracted.total;
+      items.push(...extracted.entries);
       const doneByTotal = total !== null && items.length >= total;
-      const doneByShortPage = entries.length < PAGE_SIZE;
-      if (doneByTotal || doneByShortPage) {
+      // An empty page is also a short page, so this covers both stop signals.
+      const doneByShortPage = extracted.entries.length < PAGE_SIZE;
+      const nextLinked = useLink && hasNextLink(response.headers['link']);
+      if (doneByTotal || (doneByShortPage && !nextLinked)) {
         return {
           items,
           complete: true,
@@ -134,11 +139,10 @@ export class ForgejoHttpClient {
     return { items, complete: false, pages: MAX_PAGES, total };
   }
 
-  private request<T>(input: RequestInput): Promise<HttpResponse<T>> {
-    const initial = input.url;
-    if (!initial)
-      throw new ForgejoAxiError('Request URL is missing', 'INTERNAL_ERROR');
-    const url = initial;
+  private request<T>(
+    input: RequestInput & { url: URL },
+  ): Promise<HttpResponse<T>> {
+    const url = input.url;
     for (const [key, value] of Object.entries(input.query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
@@ -229,10 +233,6 @@ export class ForgejoHttpClient {
       headers['content-length'] = Buffer.byteLength(body);
     }
     const options: https.RequestOptions = {
-      protocol: url.protocol,
-      hostname: requestHostname(url.hostname),
-      port: url.port,
-      path: `${url.pathname}${url.search}`,
       method,
       headers,
       signal: AbortSignal.timeout(this.config.timeoutMs),
@@ -249,13 +249,10 @@ export class ForgejoHttpClient {
           error instanceof ForgejoAxiError ? error : this.networkError(error),
         );
       };
-      const request = requestModule.request(options, (response) => {
+      const request = requestModule.request(url, options, (response) => {
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer | string) => {
           chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
-        response.once('aborted', () => {
-          rejectOnce(new Error('Forgejo response ended before the body'));
         });
         response.once('error', rejectOnce);
         response.once('close', () => {
@@ -265,10 +262,6 @@ export class ForgejoHttpClient {
         });
         response.on('end', () => {
           if (settled) return;
-          if (!response.complete) {
-            rejectOnce(new Error('Forgejo response ended before the body'));
-            return;
-          }
           try {
             const buffer = Buffer.concat(chunks);
             const data = raw
@@ -375,7 +368,7 @@ export function redact(
   token: string | undefined,
 ): string | null {
   if (!message || !token) return message;
-  return message.split(token).join('[REDACTED]');
+  return message.replaceAll(token, '[REDACTED]');
 }
 
 function redactData(data: unknown, token: string | undefined): unknown {
@@ -441,8 +434,4 @@ function resolveRedirectTarget(location: string, current: URL): URL {
       'INVALID_REDIRECT',
     );
   }
-}
-
-export function requestHostname(hostname: string): string {
-  return hostname.replace(/^\[|\]$/g, '');
 }
