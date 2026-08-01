@@ -5,7 +5,6 @@ import {
 } from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { text } from 'node:stream/consumers';
 import { main } from '../src/cli.js';
 
 export interface RecordedRequest {
@@ -28,6 +27,7 @@ export async function startServer(
     recorded: RecordedRequest,
   ) => void | Promise<void>,
   prefix = '',
+  host = '127.0.0.1',
 ): Promise<FakeServer> {
   const requests: RecordedRequest[] = [];
   let handlerError: unknown;
@@ -37,7 +37,9 @@ export async function startServer(
         method: request.method ?? 'GET',
         url: request.url ?? '/',
         headers: request.headers,
-        body: await text(request),
+        // Byte-faithful capture: text() would strip a BOM and replace
+        // non-UTF-8 bytes before assertions could see them.
+        body: Buffer.concat(await request.toArray()).toString('utf8'),
       };
       requests.push(recorded);
       await handler(request, response, recorded);
@@ -48,13 +50,14 @@ export async function startServer(
       );
     }
   });
-  server.listen(0, '127.0.0.1');
+  server.listen(0, host);
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string')
     throw new Error('missing server address');
+  const urlHost = host.includes(':') ? `[${host}]` : host;
   return {
-    baseUrl: `http://127.0.0.1:${address.port}${prefix}`,
+    baseUrl: `http://${urlHost}:${address.port}${prefix}`,
     requests,
     close: async () => {
       server.close();

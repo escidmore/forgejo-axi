@@ -351,14 +351,21 @@ describe('CLI contract', () => {
       return json(response, 404, { message: 'not found' });
     });
     servers.push(server);
-    const connection = ['--base-url', server.baseUrl, '--json'];
+    const connectionFlags = ['--base-url', server.baseUrl, '--json'];
     const repoView = parseJson<{ repository: { full_name: string } }>(
-      (await invoke(['repo', 'view', '--repo', 'acme/widgets', ...connection]))
-        .output,
+      (
+        await invoke([
+          'repo',
+          'view',
+          '--repo',
+          'acme/widgets',
+          ...connectionFlags,
+        ])
+      ).output,
     );
     expect(repoView.repository.full_name).toBe('acme/widgets');
     const raw = parseJson<{ status: number; data: { version: string } }>(
-      (await invoke(['api', 'GET', 'version', ...connection])).output,
+      (await invoke(['api', 'GET', 'version', ...connectionFlags])).output,
     );
     expect(raw).toMatchObject({ status: 200, data: fixture.version });
     const found = parseJson<{
@@ -373,7 +380,7 @@ describe('CLI contract', () => {
           'acme/widgets',
           '--head',
           'fix/race',
-          ...connection,
+          ...connectionFlags,
         ])
       ).output,
     );
@@ -391,7 +398,7 @@ describe('CLI contract', () => {
           '--repo',
           'acme/widgets',
           '42',
-          ...connection,
+          ...connectionFlags,
         ])
       ).output,
     );
@@ -478,7 +485,7 @@ describe('CLI contract', () => {
       return json(response, 404, { message: 'not found' });
     });
     servers.push(server);
-    const connection = [
+    const connectionFlags = [
       '--repo',
       'acme/widgets',
       '--base-url',
@@ -491,7 +498,7 @@ describe('CLI contract', () => {
         await invoke([
           'pr',
           'create',
-          ...connection,
+          ...connectionFlags,
           '--title',
           'Created title',
           '--head',
@@ -513,7 +520,7 @@ describe('CLI contract', () => {
         await invoke([
           'pr',
           'update',
-          ...connection,
+          ...connectionFlags,
           '42',
           '--title',
           'Updated title',
@@ -526,7 +533,7 @@ describe('CLI contract', () => {
     });
 
     const checks = parseJson<{ checks: Record<string, unknown> }>(
-      (await invoke(['pr', 'checks', ...connection, '42'])).output,
+      (await invoke(['pr', 'checks', ...connectionFlags, '42'])).output,
     );
     expect(checks.checks).toMatchObject({
       statuses: [
@@ -549,7 +556,7 @@ describe('CLI contract', () => {
 
     const mergeability = parseJson<{
       mergeability: { mergeable: boolean; checks_pass: boolean };
-    }>((await invoke(['pr', 'mergeability', ...connection, '42'])).output);
+    }>((await invoke(['pr', 'mergeability', ...connectionFlags, '42'])).output);
     expect(mergeability.mergeability).toMatchObject({
       mergeable: true,
       checks_pass: true,
@@ -562,7 +569,7 @@ describe('CLI contract', () => {
         await invoke([
           'pr',
           'merge',
-          ...connection,
+          ...connectionFlags,
           '42',
           '--expected-head',
           'abc123',

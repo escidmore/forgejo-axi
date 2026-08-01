@@ -148,7 +148,7 @@ export function hostKey(url: URL): string {
   return url.host
     .toUpperCase()
     .replace(
-      /[^A-Z0-9]/g,
+      /[^A-Z0-9]/gu,
       (character) =>
         `_${character.codePointAt(0)?.toString(16).toUpperCase()}_`,
     );

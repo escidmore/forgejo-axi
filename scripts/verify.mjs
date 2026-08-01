@@ -12,7 +12,13 @@
 import { ok as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import console from 'node:console';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -165,6 +171,7 @@ try {
       'forgejo-axi',
       'SKILL.md',
     );
+    assert(existsSync(installed), `installer wrote no skill to ${installed}`);
     assert(
       readFileSync(installed, 'utf8') ===
         readFileSync(join(checkout, 'skills/forgejo-axi/SKILL.md'), 'utf8'),

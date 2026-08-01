@@ -108,8 +108,9 @@ function cli(args, { allowFail = false } = {}) {
 }
 
 // Nearly every invocation targets the lane repository; the exceptions
-// (the status probe and raw api paths) call cli directly.
-const repoCli = (args, options) => cli([...args, '--repo', REPO], options);
+// (the status probe and raw api paths) skip withRepo and call cli directly.
+const withRepo = (args) => [...args, '--repo', REPO];
+const repoCli = (args, options) => cli(withRepo(args), options);
 
 async function raw(method, path, body) {
   const response = await globalThis.fetch(`${API}/${path}`, {
@@ -189,6 +190,18 @@ async function mergeWhenReady(number, method, expectedHead) {
     await sleep(1000);
   }
   return { code: 'STILL_NOT_MERGEABLE' };
+}
+
+// Forgejo computes mergeability in the background and answers 405 "please try
+// again later" until that lands. A fake server settles instantly, so this wait
+// only exists against a real one.
+async function settle(number) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const state = await raw('GET', `repos/${REPO}/pulls/${number}`);
+    if (state.data?.mergeable === true) return true;
+    await sleep(1000);
+  }
+  return false;
 }
 
 // ---- refuse before any mutation ---------------------------------------------
@@ -697,6 +710,8 @@ try {
     String(raced.code),
   );
 
+  ok('forgejo settles mergeability in the background', await settle(PULL));
+
   // ...and must go through when the head is the one we proved.
   const merge = await mergeWhenReady(PULL, 'squash', prView.head_sha);
   const afterMerge = await raw('GET', `repos/${REPO}/pulls/${PULL}`);
@@ -820,18 +835,18 @@ try {
   await probeBranch(raceBranch);
   const racers = await Promise.all(
     [0, 1, 2].map(() =>
-      cliConcurrent([
-        'pr',
-        'create',
-        '--repo',
-        REPO,
-        '--head',
-        raceBranch,
-        '--base',
-        'main',
-        '--title',
-        'live: race',
-      ]),
+      cliConcurrent(
+        withRepo([
+          'pr',
+          'create',
+          '--head',
+          raceBranch,
+          '--base',
+          'main',
+          '--title',
+          'live: race',
+        ]),
+      ),
     ),
   );
   const raceNumbers = [

@@ -13,7 +13,16 @@ import {
   resolveConnection,
 } from '../src/config.js';
 import { ForgejoAxiError } from '../src/errors.js';
+import { createServer } from 'node:net';
 import { ForgejoHttpClient } from '../src/http.js';
+
+// WSL2 and some containers expose no ::1 to bind, so run the IPv6 lane only
+// where the loopback actually exists (CI runners have it).
+const ipv6Available = await new Promise<boolean>((resolve) => {
+  const probe = createServer();
+  probe.once('error', () => resolve(false));
+  probe.listen(0, '::1', () => probe.close(() => resolve(true)));
+});
 import { testSubprocessEnv } from './environment.js';
 import { closeServers, json, servers, startServer } from './server.js';
 
@@ -131,8 +140,9 @@ describe('HTTP security behavior', () => {
         'content-length': '100',
       });
       response.write('{"version":"15.0.5"');
-      // FIN instead of RST: the stream closes without a socket error, so only
-      // the close-with-incomplete-message check can catch the truncation.
+      // FIN instead of RST: covers truncation where the stream may end without
+      // a socket error. Which client event settles it varies across Node
+      // versions, so the client keeps both its error and close guards.
       response.socket?.end();
     });
     servers.push(server);
@@ -141,6 +151,45 @@ describe('HTTP security behavior', () => {
       new ForgejoHttpClient(config).api({ path: 'version' }),
     ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
   });
+
+  it('stops envelope pagination on a short page even when a Link header claims more', async () => {
+    const server = await startServer((_request, response) => {
+      response.writeHead(200, {
+        'content-type': 'application/json',
+        link: '<https://example.test/api/v1/x?page=2>; rel="next"',
+      });
+      response.end(
+        JSON.stringify({ workflow_runs: [{ id: 1 }], total_count: 900 }),
+      );
+    });
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    const result = await new ForgejoHttpClient(config).paginateEnvelope<{
+      id: number;
+    }>('repos/acme/widgets/actions/runs');
+    expect(server.requests.length).toBe(1);
+    expect(result).toMatchObject({ complete: true, pages: 1 });
+  });
+
+  it.runIf(ipv6Available)(
+    'reaches a host addressed by an IPv6 literal',
+    async () => {
+      const server = await startServer(
+        (_request, response) => {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ version: '16.0.0' }));
+        },
+        '',
+        '::1',
+      );
+      servers.push(server);
+      const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+      const response = await new ForgejoHttpClient(config).api<{
+        version: string;
+      }>({ path: 'version' });
+      expect(response.data.version).toBe('16.0.0');
+    },
+  );
 
   it.each([
     [401, 'AUTH_REQUIRED'],

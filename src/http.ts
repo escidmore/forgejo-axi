@@ -62,7 +62,7 @@ export class ForgejoHttpClient {
     path: string,
     query: Record<string, string | number | boolean | undefined> = {},
   ): Promise<Paginated<T>> {
-    return this.paginateWith<T>(path, query, (response) => {
+    return this.paginateWith<T, unknown>(path, query, true, (response) => {
       if (!Array.isArray(response.data)) {
         throw new ForgejoAxiError(
           'Forgejo returned a non-array pagination response',
@@ -81,12 +81,12 @@ export class ForgejoHttpClient {
     path: string,
     query: Record<string, string | number | boolean | undefined> = {},
   ): Promise<Paginated<T>> {
-    return this.paginateWith<T>(path, query, (response) => {
-      const data = response.data as {
-        workflow_runs?: T[];
-        total_count?: number;
-      };
-      if (!Array.isArray(data.workflow_runs)) {
+    return this.paginateWith<
+      T,
+      { workflow_runs?: T[]; total_count?: number } | null
+    >(path, query, false, (response) => {
+      const data = response.data;
+      if (!data || !Array.isArray(data.workflow_runs)) {
         throw new ForgejoAxiError(
           'Forgejo returned a malformed paginated response',
           'INVALID_RESPONSE',
@@ -99,11 +99,16 @@ export class ForgejoHttpClient {
     });
   }
 
-  /** An envelope response carries no Link header, so its absence is already a stop signal there. */
-  private async paginateWith<T>(
+  /**
+   * The array shape trusts a Link rel="next" over a short page; the envelope
+   * shape (`useLink` false) stops on a short page alone — exactly how the two
+   * loops behaved before they were merged.
+   */
+  private async paginateWith<T, R>(
     path: string,
     query: Record<string, string | number | boolean | undefined>,
-    extract: (response: HttpResponse<unknown>) => {
+    useLink: boolean,
+    extract: (response: HttpResponse<R>) => {
       entries: T[];
       total: number | null;
     },
@@ -111,7 +116,7 @@ export class ForgejoHttpClient {
     const items: T[] = [];
     let total: number | null = null;
     for (let page = 1; page <= MAX_PAGES; page += 1) {
-      const response = await this.api<unknown>({
+      const response = await this.api<R>({
         path,
         query: { ...query, page, limit: PAGE_SIZE },
       });
@@ -121,10 +126,8 @@ export class ForgejoHttpClient {
       const doneByTotal = total !== null && items.length >= total;
       // An empty page is also a short page, so this covers both stop signals.
       const doneByShortPage = extracted.entries.length < PAGE_SIZE;
-      if (
-        doneByTotal ||
-        (!hasNextLink(response.headers['link']) && doneByShortPage)
-      ) {
+      const nextLinked = useLink && hasNextLink(response.headers['link']);
+      if (doneByTotal || (doneByShortPage && !nextLinked)) {
         return {
           items,
           complete: true,

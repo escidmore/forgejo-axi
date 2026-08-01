@@ -1,4 +1,3 @@
-import { parseArgs as tokenize } from 'node:util';
 import { usageError } from './errors.js';
 
 type FlagKind = 'boolean' | 'value';
@@ -10,51 +9,62 @@ export interface ParsedArgs {
   positionals: string[];
 }
 
+// Hand-rolled on purpose: node:util's parseArgs expands `-abc` into per-letter
+// short options and accepts a bare `-` as a positional, so its rejections name
+// tokens the user never typed. This CLI's contract is to echo flags as typed.
 export function parseArgs(
   args: readonly string[],
   spec: FlagSpec,
   command: string,
 ): ParsedArgs {
-  const options: Record<string, { type: 'string' | 'boolean' }> = {};
-  for (const [name, kind] of Object.entries(spec)) {
-    options[name.slice(2)] = { type: kind === 'value' ? 'string' : 'boolean' };
-  }
-  // Non-strict tokenizing keeps every rejection, and its message, local.
-  const { positionals, tokens } = tokenize({
-    args: [...args],
-    options,
-    strict: false,
-    allowPositionals: true,
-    tokens: true,
-  });
   const flags: Record<string, string | boolean> = {};
-  for (const token of tokens) {
-    if (token.kind !== 'option') continue;
-    const kind = spec[token.rawName];
+  const positionals: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === undefined) continue;
+    if (argument === '--') {
+      positionals.push(...args.slice(index + 1));
+      break;
+    }
+    if (!argument.startsWith('-')) {
+      positionals.push(argument);
+      continue;
+    }
+
+    const equals = argument.indexOf('=');
+    const name = equals === -1 ? argument : argument.slice(0, equals);
+    const inlineValue = equals === -1 ? undefined : argument.slice(equals + 1);
+    const kind = spec[name];
     if (!kind) {
-      throw usageError(`Unknown flag ${token.rawName} for \`${command}\``, [
+      throw usageError(`Unknown flag ${name} for \`${command}\``, [
         `Valid flags: ${Object.keys(spec).sort().join(', ') || 'none'}`,
         `Run \`forgejo-axi ${command} --help\``,
       ]);
     }
-    if (Object.hasOwn(flags, token.rawName)) {
-      throw usageError(`Flag ${token.rawName} may only be supplied once`);
+    if (Object.hasOwn(flags, name)) {
+      throw usageError(`Flag ${name} may only be supplied once`);
     }
+
     if (kind === 'boolean') {
-      if (token.value !== undefined) {
-        throw usageError(`${token.rawName} does not accept a value`);
+      if (inlineValue !== undefined) {
+        throw usageError(`${name} does not accept a value`);
       }
-      flags[token.rawName] = true;
+      flags[name] = true;
       continue;
     }
+
+    const value = inlineValue ?? args[index + 1];
     if (
-      token.value === undefined ||
-      (!token.inlineValue && token.value.startsWith('-'))
+      value === undefined ||
+      (inlineValue === undefined && value.startsWith('-'))
     ) {
-      throw usageError(`${token.rawName} requires a value`);
+      throw usageError(`${name} requires a value`);
     }
-    flags[token.rawName] = token.value;
+    flags[name] = value;
+    if (inlineValue === undefined) index += 1;
   }
+
   return { command, flags, positionals };
 }
 
