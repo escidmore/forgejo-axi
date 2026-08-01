@@ -18,17 +18,18 @@ jobs:
     name: Publish to npm
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      # Signs the published tarball against this workflow run.
-      id-token: write
+      contents: read # reads the tagged tree; writes nothing back to the repo
+      id-token: write # signs the published tarball against this workflow run
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
+      # Deliberately uncached. The npm cache is writable by every other workflow
+      # run, so a poisoned entry restored here would reach the published tarball.
+      # A release runs once; a cold install is worth more than the seconds saved.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
       # A release cut from a tag that disagrees with package.json would publish
