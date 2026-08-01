@@ -18,6 +18,7 @@ import { Buffer } from 'node:buffer';
 import { execFileSync } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { URL } from 'node:url';
 
 const CLI = new URL('../dist/bin/forgejo-axi.js', import.meta.url).pathname;
@@ -138,7 +139,13 @@ console.log(
 );
 
 const BRANCH = `live-probe-${Date.now().toString(36)}`;
-const created = { issues: [], labels: [], milestone: null, pull: null };
+const created = {
+  issues: [],
+  labels: [],
+  pageLabels: [],
+  milestone: null,
+  pull: null,
+};
 
 try {
   // ---- seed ----------------------------------------------------------------
@@ -282,6 +289,12 @@ try {
       cli(['issue', 'list', '--repo', REPO, '--milestone', 'v-live']),
     ),
   );
+  const owner = REPO.split('/')[0];
+  cli(['issue', 'edit', '--repo', REPO, String(n), '--assignee', owner]);
+  ok(
+    'assignee filter narrows',
+    excludesOther(cli(['issue', 'list', '--repo', REPO, '--assignee', owner])),
+  );
   ok(
     'state filter narrows',
     cli(['issue', 'list', '--repo', REPO, '--state', 'closed']).issues.every(
@@ -359,6 +372,66 @@ try {
       preview.issue.body_truncated === true,
   );
 
+  // ---- repo view -----------------------------------------------------------
+  const repo = cli(['repo', 'view', '--repo', REPO]).repository;
+  ok(
+    'repo view reports canonical identity',
+    repo.full_name === REPO &&
+      repo.url === `${BASE_URL.replace(/\/$/, '')}/${REPO}`,
+  );
+
+  // ---- a real multi-page endpoint ------------------------------------------
+  // One Forgejo endpoint is already known to ignore page and limit. The shared
+  // pagination helper is what issue list, pr list and label list all walk, so
+  // prove it against a genuine page boundary rather than assuming.
+  const paged = [];
+  for (let i = 1; i <= 55; i += 1) {
+    const made = await raw('POST', `repos/${REPO}/labels`, {
+      name: `live-page-${String(i).padStart(2, '0')}`,
+      color: '#ededed',
+    });
+    if (made.data?.id) created.pageLabels.push(made.data.id);
+    paged.push(`live-page-${String(i).padStart(2, '0')}`);
+  }
+
+  const walked = cli([
+    'api',
+    'GET',
+    `repos/${REPO}/labels`,
+    '--paginate',
+    '--full',
+  ]);
+  const walkedNames = new Set(walked.data.map((l) => l.name));
+  ok(
+    'api --paginate walks every page',
+    walked.page_info.complete === true &&
+      walked.page_info.pages >= 2 &&
+      paged.every((name) => walkedNames.has(name)),
+    `pages=${walked.page_info.pages} fetched=${walked.page_info.fetched}`,
+  );
+
+  const allLabels = cli(['label', 'list', '--repo', REPO, '--full']);
+  const listedNames = new Set(allLabels.labels.map((l) => l.name));
+  ok(
+    'label list crosses the page boundary',
+    allLabels.page_info.complete === true &&
+      paged.every((name) => listedNames.has(name)),
+    `fetched=${allLabels.page_info.fetched}`,
+  );
+
+  ok(
+    'label edit updates in place',
+    cli([
+      'label',
+      'edit',
+      '--repo',
+      REPO,
+      'live-triage',
+      '--description',
+      'live edited',
+    ]).updated === true,
+  );
+
   // ---- pull request lane ---------------------------------------------------
   await raw('POST', `repos/${REPO}/contents/live-base.txt`, {
     content: Buffer.from('base\n').toString('base64'),
@@ -433,6 +506,76 @@ try {
       !listed.issues.some((i) => i.number === created.pull),
   );
 
+  // ---- pull request reads --------------------------------------------------
+  ok(
+    'pr list includes the open pull request',
+    cli(['pr', 'list', '--repo', REPO, '--full']).pull_requests.some(
+      (p) => p.number === created.pull,
+    ),
+  );
+  ok(
+    'pr find locates it by head branch',
+    cli(['pr', 'find', '--repo', REPO, '--head', BRANCH]).pull_request
+      .number === created.pull,
+  );
+  const prView = cli([
+    'pr',
+    'view',
+    '--repo',
+    REPO,
+    String(created.pull),
+  ]).pull_request;
+  ok('pr view reports the head sha', /^[0-9a-f]{40}$/.test(prView.head_sha));
+  ok(
+    'pr update changes the title',
+    cli([
+      'pr',
+      'update',
+      '--repo',
+      REPO,
+      String(created.pull),
+      '--title',
+      'live: probe (updated)',
+    ]).pull_request.title === 'live: probe (updated)',
+  );
+
+  // ---- checks against real commit statuses ---------------------------------
+  // An empty status set must read as none, never as a failure — a host without
+  // Actions has no statuses to report and that is not a red check.
+  const empty = cli(['pr', 'checks', '--repo', REPO, String(created.pull)]);
+  ok(
+    'no statuses reads as none, not failure',
+    empty.checks.reported === 0 && empty.checks.state === 'none',
+    `state=${empty.checks.state}`,
+  );
+
+  await raw('POST', `repos/${REPO}/statuses/${prView.head_sha}`, {
+    state: 'success',
+    context: 'live/probe',
+    description: 'seeded by the live matrix',
+  });
+  const green = cli(['pr', 'checks', '--repo', REPO, String(created.pull)]);
+  ok(
+    'pr checks aggregates a real commit status',
+    green.checks.reported === 1 &&
+      green.checks.state === 'success' &&
+      green.checks.statuses.some((s) => s.context === 'live/probe'),
+    `reported=${green.checks.reported} state=${green.checks.state}`,
+  );
+  const mergeability = cli([
+    'pr',
+    'mergeability',
+    '--repo',
+    REPO,
+    String(created.pull),
+  ]);
+  ok(
+    'mergeability reflects the real head and checks',
+    mergeability.mergeability.head_sha === prView.head_sha &&
+      mergeability.mergeability.checks_pass === true,
+    `mergeable=${mergeability.mergeability.mergeable}`,
+  );
+
   // The expected-head guard must refuse a stale head rather than merge it.
   const raced = cli(
     [
@@ -451,6 +594,39 @@ try {
     'expected-head refuses a stale head without merging',
     raced.code === 'HEAD_CHANGED' && stillOpen.data?.merged === false,
     String(raced.code),
+  );
+
+  // Forgejo computes mergeability in the background and answers 405 "please try
+  // again later" until that lands. A fake server settles instantly, so this wait
+  // only exists against a real one.
+  let settled = false;
+  for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+    const state = await raw('GET', `repos/${REPO}/pulls/${created.pull}`);
+    settled = state.data?.mergeable === true;
+    if (!settled) await sleep(1000);
+  }
+  ok('forgejo settles mergeability in the background', settled);
+
+  // ...and must go through when the head is the one we proved.
+  const merge = cli([
+    'pr',
+    'merge',
+    '--repo',
+    REPO,
+    String(created.pull),
+    '--method',
+    'squash',
+    '--expected-head',
+    prView.head_sha,
+  ]);
+  const afterMerge = await raw('GET', `repos/${REPO}/pulls/${created.pull}`);
+  ok(
+    'expected-head merges when the head matches',
+    Boolean(merge.proof) && afterMerge.data?.merged === true,
+  );
+  ok(
+    'pr merged proves the merge independently',
+    Boolean(cli(['pr', 'merged', '--repo', REPO, String(created.pull)]).proof),
   );
 } catch (error) {
   ok('RUN ABORTED', false, String(error.message).slice(0, 400));
@@ -478,6 +654,8 @@ try {
       /* best effort */
     }
   }
+  for (const id of created.pageLabels)
+    await raw('DELETE', `repos/${REPO}/labels/${id}`);
   if (created.milestone)
     await raw('DELETE', `repos/${REPO}/milestones/${created.milestone}`);
   await raw('DELETE', `repos/${REPO}/branches/${BRANCH}`);

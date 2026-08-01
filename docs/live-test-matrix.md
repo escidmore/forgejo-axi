@@ -23,6 +23,14 @@ The `state`, `label`, `assignee`, and `milestone` filters each demonstrably narr
 
 Both runs deleted every issue, pull request, branch, label, and milestone they created, and both repositories were verified empty afterwards. Note that `status` reports `authenticated: false` for a token lacking `read:user` even when that token is fully able to perform repository and issue work; the auth probe reflects one scope, not overall usability.
 
+## What a lane covers
+
+Each lane runs 44 assertions: the whole issue family; `label` create, list, edit, and delete; `repo view`; `api --paginate` across a genuine page boundary; and `pr` create, list, find, view, update, checks, mergeability, merge, and merged.
+
+Two of those exist only because a real server behaves unlike a fake one. Pagination is walked against 55 seeded labels, so the shared helper is proven to cross a page boundary without dropping a row — worth asserting because one Forgejo endpoint is already known to ignore `page` and `limit` entirely. And Forgejo computes mergeability in the background, answering `405 please try again later` until it settles, so the lane waits for the server rather than racing it. Checks are aggregated from a commit status seeded through the statuses API, which also pins down that an empty status set reads as `none` rather than as a failure.
+
+Not yet covered live, each needing more than a disposable repository: branch protection and required status contexts; Actions job logs on 16, which needs a runner and a real workflow run; the `rebase` and `merge` methods, since only `squash` is exercised; the reconcile and race-recovery paths in `pr create` and `label create`; non-`GET` `api` verbs; and transport behaviour — CA files, path prefixes, and redirects. Wiring the lanes into CI as manually-approved, non-blocking jobs is also outstanding.
+
 ## Running a lane
 
 `npm run test:live -- 15` or `npm run test:live -- 16`. It is deliberately outside `npm run check`.
