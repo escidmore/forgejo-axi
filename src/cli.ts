@@ -617,16 +617,12 @@ async function labelDelete(
 function labelInput(parsed: ParsedArgs): LabelInput {
   const color = stringFlag(parsed, '--color');
   const description = stringFlag(parsed, '--description');
+  if (color !== undefined && !/^#?[0-9a-f]{6}$/i.test(color.trim()))
+    throw usageError('--color must be a six-digit hex color such as #ededed');
   return {
-    ...(color === undefined ? {} : { color: labelColor(color) }),
+    ...(color === undefined ? {} : { color: normalizeLabelColor(color) }),
     ...(description === undefined ? {} : { description }),
   };
-}
-
-function labelColor(value: string): string {
-  if (!/^#?[0-9a-f]{6}$/i.test(value.trim()))
-    throw usageError('--color must be a six-digit hex color such as #ededed');
-  return normalizeLabelColor(value);
 }
 
 async function serviceFor(

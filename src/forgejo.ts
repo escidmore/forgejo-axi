@@ -511,7 +511,7 @@ export class ForgejoService {
       path: `${repoPath(repo)}/labels`,
       body: {
         name,
-        color: input.color ?? DEFAULT_LABEL_COLOR,
+        color: input.color ?? '#ededed',
         description: input.description ?? '',
       },
     });
@@ -826,8 +826,6 @@ function normalizePull(
     merged_by: pull.merged_by?.login ?? null,
   };
 }
-
-const DEFAULT_LABEL_COLOR = '#ededed';
 
 function normalizeLabel(
   config: ConnectionConfig,
