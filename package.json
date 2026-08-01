@@ -38,6 +38,7 @@
     "test": "vitest run",
     "test:smoke": "npm run build && node scripts/smoke.mjs",
     "test:live": "npm run build && node scripts/live.mjs",
+    "verify": "node scripts/verify.mjs",
     "check": "npm run lint && npm run typecheck && npm test && npm run test:smoke",
     "prepublishOnly": "npm run check"
   },
