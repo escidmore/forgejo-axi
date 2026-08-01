@@ -32,7 +32,8 @@ export interface MainOptions {
 }
 
 const VERSION = '0.1.0';
-const DESCRIPTION = 'Inspect and manage Forgejo pull request lifecycles';
+const DESCRIPTION =
+  'Inspect and manage Forgejo pull request and issue workflows';
 const CONNECTION_FLAGS: FlagSpec = {
   '--base-url': 'value',
   '--token-env': 'value',
