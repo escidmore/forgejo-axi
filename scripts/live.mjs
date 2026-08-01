@@ -627,6 +627,60 @@ try {
     `mergeable=${mergeability.mergeability.mergeable}`,
   );
 
+  // ---- reviews and diff (read-only) ----------------------------------------
+  const noReviews = cli([
+    'pr',
+    'reviews',
+    '--repo',
+    REPO,
+    String(created.pull),
+  ]);
+  ok(
+    'a pull request with no reviews lists none',
+    noReviews.reviews.length === 0 && noReviews.page_info.fetched === 0,
+    `fetched=${noReviews.page_info.fetched}`,
+  );
+
+  const diff = cli(['pr', 'diff', '--repo', REPO, String(created.pull)]);
+  ok(
+    'pr diff returns the diff Forgejo generates for the pull request',
+    diff.diff.includes('diff --git') &&
+      diff.diff.includes(`${BRANCH}.txt`) &&
+      diff.diff_info.lines > 0,
+    `lines=${diff.diff_info.lines}`,
+  );
+
+  // Forgejo refuses to let an author approve their own pull request but accepts
+  // a COMMENT review, which is what proves the verdict and the file-anchored
+  // comment survive the round trip.
+  const submitted = await raw(
+    'POST',
+    `repos/${REPO}/pulls/${created.pull}/reviews`,
+    {
+      event: 'COMMENT',
+      body: 'live probe review',
+      comments: [
+        { path: `${BRANCH}.txt`, new_position: 1, body: 'live inline probe' },
+      ],
+    },
+  );
+  ok(
+    'submit a COMMENT review on our own pull request',
+    submitted.status === 200,
+    `status=${submitted.status}`,
+  );
+  const reviewed = cli(['pr', 'reviews', '--repo', REPO, String(created.pull)]);
+  const probe = reviewed.reviews.find(
+    (review) => review.body === 'live probe review',
+  );
+  ok(
+    'pr reviews reports the reviewer, the verdict and the anchored comment',
+    probe?.state === 'COMMENT' &&
+      typeof probe.user === 'string' &&
+      probe.comments.some((comment) => comment.path === `${BRANCH}.txt`),
+    `state=${probe?.state} comments=${probe?.comments.length}`,
+  );
+
   // The expected-head guard must refuse a stale head rather than merge it.
   const raced = cli(
     [

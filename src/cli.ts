@@ -53,7 +53,7 @@ Usage:
   forgejo-axi status [connection flags]
   forgejo-axi repo view --repo OWNER/REPO [connection flags]
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
-  forgejo-axi pr <find|list|view|create|update|checks|mergeability|merge|merged> ...
+  forgejo-axi pr <find|list|view|reviews|diff|create|update|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
   forgejo-axi issue <list|view|create|edit|close|reopen|comment> ...
   forgejo-axi run <list|view|cancel|download> ...
@@ -78,6 +78,8 @@ Commands:
   find          Find a pull request by head branch
   list          List pull requests
   view          View canonical pull request identity
+  reviews       List reviews with their inline comments
+  diff          Print the unified diff
   create        Idempotently create or reconcile an open pull request
   update        Idempotently update a pull request
   checks        Normalize commit statuses and required contexts
@@ -156,6 +158,8 @@ const HELP: Record<string, string> = {
   'pr mergeability': `forgejo-axi pr mergeability — evaluate mergeability and required checks\n\nUsage:\n  forgejo-axi pr mergeability --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi pr mergeability --repo owner/repo 42\n`,
   'pr merge': `forgejo-axi pr merge — expected-head merge with merged-state proof\n\nUsage:\n  forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merge|squash|rebase] [connection flags]\n\nExample:\n  forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash\n`,
   'pr merged': `forgejo-axi pr merged — return merged-state proof\n\nUsage:\n  forgejo-axi pr merged --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi pr merged --repo owner/repo 42\n`,
+  'pr reviews': `forgejo-axi pr reviews — list reviews with their inline comments\n\nUsage:\n  forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full] [connection flags]\n\nFlags:\n  --limit N   Display this many reviews instead of the default 30\n  --full      Display every review, with complete bodies instead of previews\n\nExample:\n  forgejo-axi pr reviews --repo owner/repo 42 --full\n`,
+  'pr diff': `forgejo-axi pr diff — print the unified diff\n\nUsage:\n  forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full] [connection flags]\n\nFlags:\n  --full   Print every line instead of the first 30\n\nExample:\n  forgejo-axi pr diff --repo owner/repo 42 --full\n`,
   'label list': `forgejo-axi label list — list repository labels\n\nUsage:\n  forgejo-axi label list --repo OWNER/REPO [--limit N|--full] [connection flags]\n\nExample:\n  forgejo-axi label list --repo owner/repo --full\n`,
   'label create': `forgejo-axi label create — idempotently create or reconcile a label\n\nUsage:\n  forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT] [connection flags]\n\nFlags:\n  --color HEX          Six-digit hex color; defaults to #ededed on creation\n  --description TEXT   Label description\n\nExample:\n  forgejo-axi label create --repo owner/repo bug --color '#d73a4a' --description 'Something is broken'\n`,
   'label edit': `forgejo-axi label edit — edit a label addressed by name\n\nUsage:\n  forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--description TEXT] [connection flags]\n\nFlags:\n  --name NEW           Rename the label, preserving its issue assignments\n  --color HEX          Six-digit hex color\n  --description TEXT   Label description\n\nExample:\n  forgejo-axi label edit --repo owner/repo bug --color '#b60205'\n`,
@@ -383,6 +387,10 @@ async function runPull(
       return pullFind(rest, env);
     case 'list':
       return pullList(rest, env);
+    case 'reviews':
+      return pullReviews(rest, env);
+    case 'diff':
+      return pullDiff(rest, env);
     case 'view':
     case 'checks':
     case 'mergeability':
@@ -496,6 +504,77 @@ async function pullRead(
   if (command === 'mergeability')
     return { mergeability: await service.mergeability(repo, number) };
   return { proof: await service.merged(repo, number) };
+}
+
+async function pullReviews(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--limit': 'value',
+      '--full': 'boolean',
+    }),
+    'pr reviews',
+  );
+  const number = parsePullNumber(
+    requireOnePositional(parsed, 'pull request number'),
+  );
+  const full = boolFlag(parsed, '--full');
+  const requestedLimit = stringFlag(parsed, '--limit');
+  const json = boolFlag(parsed, '--json');
+  rejectDisplayFlagConflicts(full, requestedLimit, json);
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  const page = await service.listReviews(repo, number, full);
+  const showAll = full || json;
+  const displayed = showAll
+    ? page.items
+    : page.items.slice(0, displayLimit(requestedLimit));
+  return listOutput('reviews', displayed, page, showAll);
+}
+
+async function pullDiff(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({ '--repo': 'value', '--full': 'boolean' }),
+    'pr diff',
+  );
+  const number = parsePullNumber(
+    requireOnePositional(parsed, 'pull request number'),
+  );
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  const diff = await service.diffPull(repo, number);
+  const showAll = boolFlag(parsed, '--full') || boolFlag(parsed, '--json');
+  return diffOutput(diff, showAll);
+}
+
+/** Caps the diff at display time on the same terms as a TOON list view. */
+function diffOutput(diff: string, showAll: boolean): Record<string, unknown> {
+  const body = diff.endsWith('\n') ? diff.slice(0, -1) : diff;
+  const lines = body === '' ? [] : body.split('\n');
+  const displayed = showAll ? lines : lines.slice(0, displayLimit(undefined));
+  const hidden = lines.length - displayed.length;
+  return {
+    // A complete diff is emitted exactly as the forge sent it, trailing
+    // newline included, so a saved patch still applies. An excerpt is an
+    // excerpt and carries no such promise.
+    diff: hidden === 0 ? diff : displayed.join('\n'),
+    diff_info: {
+      lines: lines.length,
+      displayed: displayed.length,
+      truncated: hidden > 0,
+    },
+    ...(hidden > 0
+      ? { next: ['Rerun with --full to print the complete diff'] }
+      : {}),
+  };
 }
 
 async function pullCreate(

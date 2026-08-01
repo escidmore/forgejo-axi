@@ -33,6 +33,8 @@ forgejo-axi repo view --repo owner/repo
 forgejo-axi pr find --repo owner/repo --head feature --base main
 forgejo-axi pr list --repo owner/repo --fields number,title,state,head
 forgejo-axi pr view --repo owner/repo 42 --full
+forgejo-axi pr reviews --repo owner/repo 42 --full
+forgejo-axi pr diff --repo owner/repo 42
 forgejo-axi pr create --repo owner/repo --title 'Add feature' --head feature --base main
 forgejo-axi pr checks --repo owner/repo 42 --json
 forgejo-axi pr mergeability --repo owner/repo 42
@@ -41,6 +43,8 @@ forgejo-axi pr merged --repo owner/repo 42
 ```
 
 `pr create` and `pr update` reconcile existing state instead of duplicating mutations. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
+
+`pr reviews` and `pr diff` are read-only. Reviews come back with their verdicts and the inline comments anchored to the file and position each one marks, and the diff is the one the forge generates, so no pull ref has to be fetched. Submitting, dismissing, and deleting reviews stay on the `api` path.
 
 Lists fetch up to 100 Forgejo pages of 50 rows (5000 rows) and report completeness in `page_info`. TOON displays 30 rows by default and hints at `--full` when truncated; JSON displays every fetched row, and `--limit` is rejected with `--json`. Pull request lists use four fields by default and accept `--fields LIST|all`.
 
