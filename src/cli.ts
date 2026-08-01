@@ -13,9 +13,11 @@ import { resolveConnection, type ConnectionInput } from './config.js';
 import { asForgejoError, usageError } from './errors.js';
 import {
   ForgejoService,
+  normalizeLabelColor,
   pageInfo,
   parsePullNumber,
   parseRepository,
+  type LabelInput,
   type PullRequestIdentity,
   type RepositoryRef,
 } from './forgejo.js';
@@ -44,6 +46,7 @@ Usage:
   forgejo-axi repo view --repo OWNER/REPO [connection flags]
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
   forgejo-axi pr <find|list|view|create|update|checks|mergeability|merge|merged> ...
+  forgejo-axi label <list|create|edit|delete> ...
 
 Connection flags:
   --base-url URL     Forgejo root URL; defaults to FORGEJO_BASE_URL
@@ -74,6 +77,24 @@ Commands:
 Run \`forgejo-axi pr <command> --help\` for flags and examples.
 `;
 
+const LABEL_HELP = `forgejo-axi label — repository label taxonomy commands
+
+Commands:
+  list    List repository labels
+  create  Idempotently create or reconcile a label
+  edit    Edit a label addressed by name
+  delete  Delete a label addressed by name
+
+Labels are addressed by name; the numeric id is resolved for you.
+
+Run \`forgejo-axi label <command> --help\` for flags and examples.
+`;
+
+const FAMILY_HELP: Record<string, string> = {
+  pr: PR_HELP,
+  label: LABEL_HELP,
+};
+
 const HELP: Record<string, string> = {
   status: `forgejo-axi status — probe host, authentication, version, and capabilities\n\nUsage:\n  forgejo-axi status [connection flags]\n\nExample:\n  forgejo-axi status --base-url https://forgejo.example\n`,
   'repo view': `forgejo-axi repo view — show repository identity and lifecycle features\n\nUsage:\n  forgejo-axi repo view --repo OWNER/REPO [connection flags]\n\nExample:\n  forgejo-axi repo view --repo owner/repo\n`,
@@ -87,6 +108,10 @@ const HELP: Record<string, string> = {
   'pr mergeability': `forgejo-axi pr mergeability — evaluate mergeability and required checks\n\nUsage:\n  forgejo-axi pr mergeability --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi pr mergeability --repo owner/repo 42\n`,
   'pr merge': `forgejo-axi pr merge — expected-head merge with merged-state proof\n\nUsage:\n  forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merge|squash|rebase] [connection flags]\n\nExample:\n  forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash\n`,
   'pr merged': `forgejo-axi pr merged — return merged-state proof\n\nUsage:\n  forgejo-axi pr merged --repo OWNER/REPO NUMBER [connection flags]\n\nExample:\n  forgejo-axi pr merged --repo owner/repo 42\n`,
+  'label list': `forgejo-axi label list — list repository labels\n\nUsage:\n  forgejo-axi label list --repo OWNER/REPO [--limit N|--full] [connection flags]\n\nExample:\n  forgejo-axi label list --repo owner/repo --full\n`,
+  'label create': `forgejo-axi label create — idempotently create or reconcile a label\n\nUsage:\n  forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT] [connection flags]\n\nFlags:\n  --color HEX          Six-digit hex color; defaults to #ededed on creation\n  --description TEXT   Label description\n\nExample:\n  forgejo-axi label create --repo owner/repo bug --color '#d73a4a' --description 'Something is broken'\n`,
+  'label edit': `forgejo-axi label edit — edit a label addressed by name\n\nUsage:\n  forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--description TEXT] [connection flags]\n\nFlags:\n  --name NEW           Rename the label, preserving its issue assignments\n  --color HEX          Six-digit hex color\n  --description TEXT   Label description\n\nExample:\n  forgejo-axi label edit --repo owner/repo bug --color '#b60205'\n`,
+  'label delete': `forgejo-axi label delete — delete a label addressed by name\n\nUsage:\n  forgejo-axi label delete --repo OWNER/REPO NAME [connection flags]\n\nExample:\n  forgejo-axi label delete --repo owner/repo wontfix\n`,
 };
 
 export async function main(options: MainOptions = {}): Promise<void> {
@@ -167,6 +192,7 @@ async function dispatch(
   if (command === 'repo') return runRepo(rest, env);
   if (command === 'api') return runApi(rest, env);
   if (command === 'pr') return runPull(rest, env);
+  if (command === 'label') return runLabel(rest, env);
   throw usageError(`Unknown command: ${command}`, ['Run `forgejo-axi --help`']);
 }
 
@@ -470,6 +496,135 @@ async function pullMerge(
   return { proof: await service.merge(repo, number, expectedHead, method) };
 }
 
+async function runLabel(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const subcommand = args[0];
+  if (!subcommand || subcommand === '--help') return helpResult('label');
+  const key = `label ${subcommand}`;
+  if (!Object.hasOwn(HELP, key)) {
+    throw usageError(`Unknown label command: ${subcommand}`, [
+      'Run `forgejo-axi label --help`',
+    ]);
+  }
+  const rest = args.slice(1);
+  if (rest.includes('--help')) return helpResult(key);
+  switch (subcommand) {
+    case 'list':
+      return labelList(rest, env);
+    case 'create':
+      return labelCreate(rest, env);
+    case 'edit':
+      return labelEdit(rest, env);
+    case 'delete':
+      return labelDelete(rest, env);
+    default:
+      throw usageError(`Unknown label command: ${subcommand}`);
+  }
+}
+
+async function labelList(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--limit': 'value',
+      '--full': 'boolean',
+    }),
+    'label list',
+  );
+  rejectPositionals(parsed);
+  const full = boolFlag(parsed, '--full');
+  const json = boolFlag(parsed, '--json');
+  const requestedLimit = stringFlag(parsed, '--limit');
+  rejectDisplayFlagConflicts(full, requestedLimit, json);
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  const page = await service.listLabels(repo);
+  const showAll = full || json;
+  const displayed = showAll
+    ? page.items
+    : page.items.slice(0, displayLimit(requestedLimit));
+  return listOutput('labels', displayed, page, showAll);
+}
+
+async function labelCreate(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--color': 'value',
+      '--description': 'value',
+    }),
+    'label create',
+  );
+  const name = requireOnePositional(parsed, 'label name');
+  const repo = resolveRepo(parsed, env);
+  const input = labelInput(parsed);
+  const service = await serviceFor(parsed, env);
+  return service.createLabel(repo, name, input);
+}
+
+async function labelEdit(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({
+      '--repo': 'value',
+      '--name': 'value',
+      '--color': 'value',
+      '--description': 'value',
+    }),
+    'label edit',
+  );
+  const name = requireOnePositional(parsed, 'label name');
+  const repo = resolveRepo(parsed, env);
+  const rename = stringFlag(parsed, '--name');
+  if (rename !== undefined && rename.trim() === '')
+    throw usageError('--name must not be empty');
+  const input = {
+    ...labelInput(parsed),
+    ...(rename === undefined ? {} : { name: rename }),
+  };
+  const service = await serviceFor(parsed, env);
+  return service.editLabel(repo, name, input);
+}
+
+async function labelDelete(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    withFlags({ '--repo': 'value' }),
+    'label delete',
+  );
+  const name = requireOnePositional(parsed, 'label name');
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  return service.deleteLabel(repo, name);
+}
+
+function labelInput(parsed: ParsedArgs): LabelInput {
+  const color = stringFlag(parsed, '--color');
+  const description = stringFlag(parsed, '--description');
+  if (color !== undefined && !/^#?[0-9a-f]{6}$/i.test(color.trim()))
+    throw usageError('--color must be a six-digit hex color such as #ededed');
+  return {
+    ...(color === undefined ? {} : { color: normalizeLabelColor(color) }),
+    ...(description === undefined ? {} : { description }),
+  };
+}
+
 async function serviceFor(
   parsed: ParsedArgs,
   env: NodeJS.ProcessEnv,
@@ -619,8 +774,7 @@ function parseJson(value: string): unknown {
 }
 
 function helpResult(key: string): never {
-  const help = key === 'pr' ? PR_HELP : HELP[key];
-  throw new HelpSignal(help ?? TOP_HELP);
+  throw new HelpSignal(FAMILY_HELP[key] ?? HELP[key] ?? TOP_HELP);
 }
 
 class HelpSignal extends Error {

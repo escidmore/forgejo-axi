@@ -23,6 +23,10 @@ export function parseArgs(
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];
     if (argument === undefined) continue;
+    if (argument === '--') {
+      positionals.push(...args.slice(index + 1));
+      break;
+    }
     if (!argument.startsWith('-')) {
       positionals.push(argument);
       continue;

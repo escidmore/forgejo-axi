@@ -14,6 +14,16 @@
       }
     }
   },
+  "labels": [
+    {
+      "id": 7,
+      "name": "bug",
+      "color": "d73a4a",
+      "description": "Something is broken"
+    },
+    { "id": 8, "name": "enhancement", "color": "a2eeef", "description": "" },
+    { "id": 9, "name": "wontfix", "color": "ffffff", "description": "Declined" }
+  ],
   "pull": {
     "number": 42,
     "state": "open",

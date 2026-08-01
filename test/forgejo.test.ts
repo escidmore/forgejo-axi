@@ -697,6 +697,184 @@ describe('pull search completeness', () => {
   });
 });
 
+describe('label name resolution', () => {
+  const labels = [
+    { id: 7, name: 'bug', color: 'd73a4a', description: 'Something is broken' },
+    { id: 8, name: 'enhancement', color: 'a2eeef', description: '' },
+  ];
+
+  async function labelServer(
+    items: Array<Record<string, unknown>>,
+  ): Promise<FakeServer> {
+    const server = await startServer((_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      if (url.pathname.endsWith('/labels') && recorded.method === 'GET') {
+        const page = Number(url.searchParams.get('page') ?? '1');
+        return json(response, 200, page === 1 ? items : []);
+      }
+      return json(response, 200, { id: 7, name: 'patched', color: 'ffffff' });
+    });
+    servers.push(server);
+    return server;
+  }
+
+  it('resolves a label name to its numeric identity', async () => {
+    const service = await serviceFor(await labelServer(labels));
+    await expect(service.resolveLabel(repo, 'bug')).resolves.toMatchObject({
+      id: 7,
+      name: 'bug',
+      color: '#d73a4a',
+    });
+  });
+
+  it('refuses ambiguous names with a usage error', async () => {
+    const service = await serviceFor(
+      await labelServer([...labels, { id: 11, name: 'bug', color: 'ffffff' }]),
+    );
+    await expect(service.resolveLabel(repo, 'bug')).rejects.toMatchObject({
+      code: 'LABEL_AMBIGUOUS',
+      usage: true,
+      details: { name: 'bug', ids: [7, 11] },
+    });
+  });
+
+  it('reports unknown names as a usage error', async () => {
+    const service = await serviceFor(await labelServer(labels));
+    await expect(service.resolveLabel(repo, 'missing')).rejects.toMatchObject({
+      code: 'LABEL_NOT_FOUND',
+      usage: true,
+    });
+  });
+
+  async function ceilingServer(): Promise<FakeServer> {
+    const server = await startServer((_request, response, recorded) => {
+      const page = Number(
+        new URL(recorded.url, 'http://fake').searchParams.get('page') ?? '1',
+      );
+      json(
+        response,
+        200,
+        Array.from({ length: 50 }, (_, index) => {
+          const id = (page - 1) * 50 + index + 1;
+          return { id, name: `label-${id}`, color: 'ededed' };
+        }),
+      );
+    });
+    servers.push(server);
+    return server;
+  }
+
+  it('never claims a label is missing from an incomplete search', async () => {
+    const service = await serviceFor(await ceilingServer());
+    await expect(service.resolveLabel(repo, 'missing')).rejects.toMatchObject({
+      code: 'PAGINATION_INCOMPLETE',
+      details: { pages: 100, fetched: 5000 },
+    });
+  });
+
+  it('never creates a label an incomplete search failed to rule out', async () => {
+    const server = await ceilingServer();
+    const service = await serviceFor(server);
+    await expect(
+      service.createLabel(repo, 'missing', {}),
+    ).rejects.toMatchObject({ code: 'PAGINATION_INCOMPLETE' });
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(
+      true,
+    );
+  });
+
+  it('never renames onto a name an incomplete search failed to rule out', async () => {
+    const server = await ceilingServer();
+    const service = await serviceFor(server);
+    await expect(
+      service.editLabel(repo, 'label-1', { name: 'missing' }),
+    ).rejects.toMatchObject({ code: 'PAGINATION_INCOMPLETE' });
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(
+      true,
+    );
+  });
+
+  it('refuses to mutate a match an incomplete search cannot prove unique', async () => {
+    const server = await ceilingServer();
+    const service = await serviceFor(server);
+    await expect(service.deleteLabel(repo, 'label-1')).rejects.toMatchObject({
+      code: 'PAGINATION_INCOMPLETE',
+    });
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(
+      true,
+    );
+  });
+
+  it('resends is_archived so a patch cannot silently unarchive', async () => {
+    const server = await labelServer([
+      {
+        id: 7,
+        name: 'bug',
+        color: 'd73a4a',
+        description: '',
+        is_archived: true,
+      },
+    ]);
+    const service = await serviceFor(server);
+    await service.editLabel(repo, 'bug', { color: '#b60205' });
+    const patch = server.requests.find(
+      (request) => request.method === 'PATCH',
+    )!;
+    expect(parseJson(patch.body)).toEqual({
+      color: '#b60205',
+      is_archived: true,
+    });
+  });
+
+  it('reconciles an existing label instead of creating a duplicate', async () => {
+    const server = await labelServer(labels);
+    const service = await serviceFor(server);
+    const result = await service.createLabel(repo, 'bug', { color: '#b60205' });
+    expect(result).toMatchObject({ created: false, updated: true });
+    const patch = server.requests.find(
+      (request) => request.method === 'PATCH',
+    )!;
+    expect(patch.url).toContain('/labels/7');
+    expect(parseJson(patch.body)).toEqual({
+      color: '#b60205',
+      is_archived: false,
+    });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('treats a matching label as an idempotent no-op', async () => {
+    const server = await labelServer(labels);
+    const service = await serviceFor(server);
+    await expect(
+      service.createLabel(repo, 'bug', { color: '#d73a4a' }),
+    ).resolves.toMatchObject({ created: false, updated: false });
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(
+      true,
+    );
+  });
+
+  it('refuses a rename that collides with another label', async () => {
+    const service = await serviceFor(await labelServer(labels));
+    await expect(
+      service.editLabel(repo, 'bug', { name: 'enhancement' }),
+    ).rejects.toMatchObject({ code: 'LABEL_EXISTS', usage: true });
+  });
+
+  it('deletes by resolved id', async () => {
+    const server = await labelServer(labels);
+    const service = await serviceFor(server);
+    await expect(service.deleteLabel(repo, 'bug')).resolves.toMatchObject({
+      deleted: true,
+      label: { id: 7, name: 'bug' },
+    });
+    expect(
+      server.requests.find((request) => request.method === 'DELETE')?.url,
+    ).toContain('/labels/7');
+  });
+});
+
 function parseJson<T = unknown>(value: string): T {
   try {
     return JSON.parse(value) as T;
