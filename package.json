@@ -20,6 +20,7 @@
   },
   "files": [
     "dist",
+    "skills",
     "README.md",
     "docs",
     "AGENTS.md"
@@ -30,6 +31,7 @@
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "build": "npm run clean && tsc -p tsconfig.build.json",
+    "gen:skill": "npm run build && node scripts/gen-skill.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
