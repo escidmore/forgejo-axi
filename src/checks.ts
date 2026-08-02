@@ -66,6 +66,12 @@ export function evaluateChecks(
     ? (branch.status_check_contexts ?? [])
     : [];
   const required: RequiredCheck[] = patterns.map((pattern) => {
+    // ponytail: minimatch's `*` stops at `/` and skips leading dots; Forgejo
+    // compiles these patterns with `glob.Compile` and no separator, so its `*`
+    // crosses `/`. `ci*` matches `ci/unit` there but not here, and we report
+    // `missing` against a pull request the server will merge. Live-probed on
+    // Forgejo 15 and 16. Upgrade path: match with Forgejo's dialect instead,
+    // which is a contract change to `pr checks` and needs its own live cases.
     const matched = statuses.filter((status) =>
       minimatch(status.context, pattern, { nonegate: true, nocomment: true }),
     );
@@ -143,7 +149,9 @@ function isNewerStatus(
   if (candidate.id !== undefined && previous.id !== undefined) {
     return candidate.id > previous.id;
   }
-  // Forgejo returns commit statuses newest-first when no explicit sort is supplied.
+  // Last resort for rows carrying neither a parseable timestamp nor an id.
+  // ForgejoService.checksForPull requests sort=recentupdate, and Forgejo also
+  // answers newest-first without one, so earlier entries are newer either way.
   return candidateIndex < previousIndex;
 }
 

@@ -29,6 +29,13 @@ Patterns are globs, not exact names — one pattern may match several Checks, in
 which case the worst state wins, or match none at all, which is the distinct state
 `missing`.
 
+The CLI and Forgejo do not currently agree on the glob dialect. Forgejo compiles
+required contexts with `glob.Compile` and no separator, so its `*` crosses `/`;
+the CLI matches with minimatch, whose `*` stops at `/` and which additionally
+refuses to match a leading dot. A pattern of `ci*` therefore matches a Check named
+`ci/unit` on the server but not here, and the CLI reports `missing` against a pull
+request Forgejo will merge. Probed live against Forgejo 15 and 16.
+
 ## Run
 
 A single execution of an Actions workflow, grouping one or more Jobs. Exists as an
