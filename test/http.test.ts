@@ -395,13 +395,29 @@ describe('HTTP security behavior', () => {
     ).rejects.toMatchObject({ code: 'RESPONSE_TOO_LARGE' });
   });
 
-  it('streams a body to a file and leaves none behind when it fails', async () => {
+  it('streams a body to a file and never leaves a partial one behind', async () => {
     const server = await startServer((_request, response, recorded) => {
       if (recorded.url.endsWith('good')) {
         response.writeHead(200, {
           'content-type': 'application/octet-stream',
         });
         response.end('artifact-bytes');
+        return;
+      }
+      if (recorded.url.endsWith('moved')) {
+        response.writeHead(302, {
+          location: recorded.url.replace('moved', 'good'),
+        });
+        response.end();
+        return;
+      }
+      if (recorded.url.endsWith('cut')) {
+        response.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': '100',
+        });
+        response.write('half-an-artifact');
+        response.destroy();
         return;
       }
       json(response, 500, { message: 'boom' });
@@ -425,6 +441,24 @@ describe('HTTP security behavior', () => {
         client.api({ path: 'bad', raw: true, file: failed }),
       ).rejects.toMatchObject({ code: 'API_ERROR' });
       await expect(readFile(failed)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      // A body that dies partway is the way a real download fails, and the
+      // file it was writing must not survive as a truncated artifact.
+      const cut = join(dir, 'cut.bin');
+      await expect(
+        client.api({ path: 'cut', raw: true, file: cut }),
+      ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+      await expect(readFile(cut)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      // The sink outlives a redirect, so the body lands once, at the target.
+      const moved = join(dir, 'moved.bin');
+      const followed = await client.api<number>({
+        path: 'moved',
+        raw: true,
+        file: moved,
+      });
+      expect(followed.data).toBe(14);
+      expect(await readFile(moved, 'utf8')).toBe('artifact-bytes');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

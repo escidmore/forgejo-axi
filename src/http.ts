@@ -2,7 +2,7 @@ import { open, rm } from 'node:fs/promises';
 import http, { type IncomingHttpHeaders } from 'node:http';
 import https from 'node:https';
 import type { Writable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
+import { finished, pipeline } from 'node:stream/promises';
 import { appendPath, type ConnectionConfig } from './config.js';
 import { ForgejoAxiError } from './errors.js';
 import { VERSION } from './version.js';
@@ -191,8 +191,14 @@ export class ForgejoHttpClient {
     try {
       return await this.requestWithRedirects<T>({ ...attempt, sink }, 0);
     } catch (error) {
+      // Wait for the descriptor to close before unlinking, because Windows
+      // refuses to remove a file that is still open. Neither step may throw:
+      // a failed cleanup would replace the error that caused the cleanup,
+      // leaving the caller with a filesystem complaint instead of the reason
+      // the download failed.
       sink.destroy();
-      await rm(input.file, { force: true });
+      await finished(sink).catch(() => {});
+      await rm(input.file, { force: true }).catch(() => {});
       throw error;
     }
   }
@@ -290,6 +296,9 @@ export class ForgejoHttpClient {
         });
         // Only a success body streams; a redirect or error body stays buffered
         // for the redirect and error paths to read.
+        // ponytail: a streamed body has no size ceiling, so a hostile host can
+        // fill the disk; cap it against the artifact's declared size if that
+        // ever matters more than downloading large artifacts at all.
         if (sink && status >= 200 && status < 300) {
           let written = 0;
           response.on('data', (chunk: Buffer) => {
