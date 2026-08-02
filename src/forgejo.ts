@@ -229,6 +229,8 @@ export interface ReviewCommentIdentity extends BodyPreview {
   commit_id: string | null;
   original_commit_id: string | null;
   diff_hunk: string;
+  diff_hunk_length: number;
+  diff_hunk_truncated: boolean;
   user: string | null;
   resolved_by: string | null;
   created_at: string | null;
@@ -1612,6 +1614,7 @@ function normalizeReviewComment(
     'Forgejo review comment response omitted a valid id',
   );
   const base = `${canonicalRepoApiUrl(config, repo)}/pulls/${context.pull}`;
+  const hunk = previewBody(comment.diff_hunk, context.full);
   // Forgejo never omits these keys; it sends an empty string or a zero for an
   // anchor it does not have, so `||` is what turns "not reported" into null.
   // A comment on a removed line carries only the original_ anchor, which is
@@ -1627,7 +1630,11 @@ function normalizeReviewComment(
     // The hunk is free text like a body, so it observes the same ceiling.
     // Uncapped, a review carrying many large hunks would let the capped view
     // emit an unbounded payload while page_info still reported no truncation.
-    diff_hunk: previewBody(comment.diff_hunk, context.full).body,
+    // It reports the same measurement too, so a consumer can tell a capped
+    // hunk from a whole one.
+    diff_hunk: hunk.body,
+    diff_hunk_length: hunk.body_length,
+    diff_hunk_truncated: hunk.body_truncated,
     user: comment.user?.login ?? null,
     resolved_by: comment.resolver?.login ?? null,
     created_at: timestampOrNull(comment.created_at),

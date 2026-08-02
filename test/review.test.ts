@@ -26,6 +26,8 @@ interface ReviewComment {
   commit_id: string | null;
   original_commit_id: string | null;
   diff_hunk: string;
+  diff_hunk_length: number;
+  diff_hunk_truncated: boolean;
   user: string | null;
   resolved_by: string | null;
   body: string;
@@ -316,12 +318,16 @@ describe('pr reviews', () => {
       (await invoke(['pr', 'reviews', ...connection(server), '42'])).output,
     );
     expect(capped.reviews[0]?.comments[0]?.diff_hunk).toHaveLength(500);
+    expect(capped.reviews[0]?.comments[0]?.diff_hunk_truncated).toBe(true);
+    expect(capped.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunk.length);
 
     const full = parseJson<ReviewsOutput>(
       (await invoke(['pr', 'reviews', ...connection(server), '42', '--full']))
         .output,
     );
     expect(full.reviews[0]?.comments[0]?.diff_hunk).toBe(hunk);
+    expect(full.reviews[0]?.comments[0]?.diff_hunk_truncated).toBe(false);
+    expect(full.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunk.length);
   });
 
   it('renders an empty review list per the contract', async () => {
