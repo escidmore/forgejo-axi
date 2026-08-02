@@ -379,11 +379,12 @@ describe('HTTP security behavior', () => {
 
   it('redacts percent-encoded and base64 reflections of the token', async () => {
     const token = 'reflect-"secret\\value';
+    // Both reflections are spelled out rather than re-derived from `token`, so
+    // a change in how the client encodes cannot move the fixture along with it.
     const server = await startServer((_request, response) =>
       json(response, 200, {
-        value: `query=${encodeURIComponent(token)} log=${Buffer.from(
-          token,
-        ).toString('base64')}`,
+        value:
+          'query=reflect-%22secret%5Cvalue log=cmVmbGVjdC0ic2VjcmV0XHZhbHVl',
       }),
     );
     servers.push(server);
