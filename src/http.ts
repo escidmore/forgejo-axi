@@ -439,9 +439,10 @@ function parseErrorBody(buffer: Buffer): unknown {
  * course. Matching the literal alone would hand those reflections to the agent.
  *
  * ponytail: whole-token reflections only. A token split across lines,
- * case-altered, or base64-encoded as part of a larger blob — where 3-byte
- * alignment shifts the encoding — still passes. Scrub by entropy instead if a
- * real host is ever seen doing that.
+ * case-altered, or base64-encoded inside a larger blob still passes — an
+ * embedded encoding neither starts on the token's own 3-byte boundary nor
+ * carries the trailing padding a standalone encoding ends with. Scrub by
+ * entropy instead if a real host is ever seen doing that.
  */
 export function redact(
   message: string | null,
