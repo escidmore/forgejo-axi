@@ -427,6 +427,7 @@ describe('pr diff', () => {
 
     // --json is the other complete path, and it returns the forge's bytes
     // unchanged — trailing newline included — so a saved patch still applies.
+    // Control characters are the one exception, pinned in the next test.
     const asJson = parseJson<DiffOutput>(
       (await invoke(['pr', 'diff', ...connection(server), '42'])).output,
     );
@@ -437,6 +438,22 @@ describe('pr diff', () => {
     });
     expect(asJson.diff).toBe(sent);
     expect(asJson.next).toBeUndefined();
+  });
+
+  it('strips from a diff body the control characters the encoders leave raw', async () => {
+    const fixture = await load<ReviewWorld>(16);
+    const del = String.fromCharCode(0x7f);
+    const csi = String.fromCharCode(0x9b);
+    const sent = `diff --git a/a.txt b/a.txt\n+payload${del}${csi}here\n`;
+    const server = await reviewServer({ ...fixture, diff: sent });
+    const result = await invoke(['pr', 'diff', ...connection(server), '42']);
+    expect(result.exitCode).toBeUndefined();
+    const output = parseJson<DiffOutput>(result.output);
+    // The one documented exception to byte-exactness: a diff is the most
+    // attacker-controllable document this CLI prints, so the strip wins.
+    expect(output.diff).toBe('diff --git a/a.txt b/a.txt\n+payloadhere\n');
+    expect(result.output).not.toContain(del);
+    expect(result.output).not.toContain(csi);
   });
 
   it('renders an empty diff without truncation', async () => {
