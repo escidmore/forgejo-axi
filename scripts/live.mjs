@@ -258,7 +258,7 @@ const created = {
   milestone: null,
   pulls: [],
   branches: [],
-  protection: null,
+  protections: [],
 };
 
 // Every probe branch carries the per-run prefix, so cleanup can never reach a
@@ -1085,7 +1085,7 @@ try {
     enable_status_check: true,
     status_check_contexts: ['live/required'],
   });
-  if (protection.status === 201) created.protection = protBase;
+  if (protection.status === 201) created.protections.push(protBase);
   ok(
     'provision a protected base branch with a required context',
     protection.status === 201,
@@ -1150,6 +1150,60 @@ try {
       `required_state=${current.required_state} passes=${current.passes}`,
     );
   }
+
+  // ---- a required pattern whose star must cross a slash --------------------
+  // minimatch stops `*` at `/`; Forgejo compiles required contexts with
+  // glob.Compile and no separator, so its `*` crosses. A rule of `live*` against
+  // a reported `live/crossing` is the smallest case that separates the two, and
+  // the host itself is the oracle: settle polls Forgejo's own `mergeable`, which
+  // it computes server-side from the same protection rule.
+  //
+  // This pins a known divergence rather than asserting agreement, so it fails
+  // from either side. If Forgejo stops crossing `/`, settle goes false; if the
+  // CLI is changed to match Forgejo's dialect, checks_pass goes true. Either
+  // way the pin has to be updated deliberately.
+  const crossBase = `${BRANCH}-crossing`;
+  const crossHead = `${BRANCH}-crossing-head`;
+  await probeBranch(crossBase);
+  const crossRule = await raw('POST', `repos/${REPO}/branch_protections`, {
+    branch_name: crossBase,
+    enable_status_check: true,
+    status_check_contexts: ['live*'],
+  });
+  if (crossRule.status === 201) created.protections.push(crossBase);
+  ok(
+    'provision a protected branch requiring a slash-crossing pattern',
+    crossRule.status === 201,
+    `status=${crossRule.status}`,
+  );
+  await probeBranch(crossHead, crossBase);
+  const crossPull = repoCli([
+    'pr',
+    'create',
+    '--head',
+    crossHead,
+    '--base',
+    crossBase,
+    '--title',
+    'live: slash-crossing required context',
+  ]);
+  const crossNumber = crossPull.pull_request.number;
+  created.pulls.push(crossNumber);
+  await seedStatus(crossPull.pull_request.head_sha, 'success', 'live/crossing');
+  const hostMerges = await settle(crossNumber);
+  const crossing = repoCli([
+    'pr',
+    'mergeability',
+    String(crossNumber),
+  ]).mergeability;
+  ok(
+    'a slash-crossing required pattern reads missing here while the host merges it',
+    hostMerges === true &&
+      crossing.checks_pass === false &&
+      crossing.mergeable === false,
+    `forgejo_mergeable=${crossing.forgejo_mergeable} checks_pass=${crossing.checks_pass} ` +
+      `settled=${hostMerges} reasons=${JSON.stringify(crossing.reasons)}`,
+  );
 
   // ---- label reconcile, collisions and archived state ----------------------
   const reconcileLabel = 'live-reconcile';
@@ -1332,12 +1386,12 @@ try {
   // A leak here is the one the next run cannot clean up for itself, so it is
   // reported rather than swallowed the way the label teardown is.
   const leaked = [];
-  if (created.protection) {
+  for (const rule of created.protections) {
     const gone = await discard(
       'DELETE',
-      `repos/${REPO}/branch_protections/${created.protection}`,
+      `repos/${REPO}/branch_protections/${rule}`,
     );
-    if (gone.status !== 204) leaked.push(`protection ${created.protection}`);
+    if (gone.status !== 204) leaked.push(`protection ${rule}`);
   }
   for (const branch of created.branches) {
     const gone = await discard('DELETE', `repos/${REPO}/branches/${branch}`);

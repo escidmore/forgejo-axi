@@ -96,6 +96,29 @@ describe('normalized checks', () => {
       passes: true,
     },
     {
+      // minimatch's `*` stops at `/`, so a pattern anchored above the separator
+      // does not match a context below it. Forgejo's own matcher crosses `/`
+      // and calls this satisfied — the divergence CONTEXT.md records under
+      // Required check. These two cases pin our side of it, so changing the
+      // matcher cannot pass unnoticed.
+      name: 'a star does not cross a slash in a required pattern',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci*'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'a bare star does not match a slashed context',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['*'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
       name: 'required glob folds several matches to the worst failing state',
       statuses: [
         { context: 'ci/unit', status: 'success' },
