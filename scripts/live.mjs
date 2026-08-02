@@ -556,8 +556,10 @@ try {
   if (RUNNER_LABEL && probed.capabilities?.runs === true) {
     const marker = `live-marker-${BRANCH}`;
     const quick = `${BRANCH}-wf-quick`;
-    // No checkout: the artifact is produced by the job, so the run depends on
-    // one action rather than two.
+    // Deliberately one step and no action: whether a run reaches success and
+    // whether its logs come back must not depend on artifact upload, which
+    // reaches the host from inside the job container and so fails for reasons
+    // of its own.
     await workflowBranch(
       quick,
       [
@@ -568,11 +570,6 @@ try {
         `    runs-on: ${RUNNER_LABEL}`,
         '    steps:',
         `      - run: echo "${marker}"`,
-        `      - run: mkdir -p out && echo "${marker}" > out/live.txt`,
-        '      - uses: forgejo/upload-artifact@v4',
-        '        with:',
-        '          name: live-artifact',
-        '          path: out',
         '',
       ].join('\n'),
     );
@@ -597,24 +594,60 @@ try {
       );
     }
 
-    if (quickRun && probed.capabilities?.run_artifacts === true) {
-      const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-live-'));
-      try {
-        const got = repoCli([
-          'run',
-          'download',
-          String(quickRun.id),
-          '--dir',
-          dir,
-        ]);
-        const [artifact] = got.downloaded ?? [];
-        ok(
-          'run download writes a real artifact to disk',
-          artifact?.name === 'live-artifact' && artifact.size_in_bytes > 0,
-          `bytes=${artifact?.size_in_bytes ?? 0}`,
-        );
-      } finally {
-        await rm(dir, { recursive: true, force: true });
+    if (probed.capabilities?.run_artifacts === true) {
+      const upload = `${BRANCH}-wf-artifact`;
+      // No checkout: the job writes the file it uploads, so this depends on one
+      // action rather than two.
+      await workflowBranch(
+        upload,
+        [
+          'name: live-artifact',
+          'on: [push]',
+          'jobs:',
+          '  upload:',
+          `    runs-on: ${RUNNER_LABEL}`,
+          '    steps:',
+          `      - run: mkdir -p out && echo "${marker}" > out/live.txt`,
+          '      - uses: forgejo/upload-artifact@v4',
+          '        with:',
+          '          name: live-artifact',
+          '          path: out',
+          '',
+        ].join('\n'),
+      );
+      const uploadRun = await waitForRun(
+        upload,
+        (run) => TERMINAL_RUN.has(run.status),
+        'the artifact workflow to finish',
+      );
+      // Upload runs from inside the job container rather than from the runner,
+      // so it is the first probe here to need the host reachable from the
+      // workflow network.
+      ok(
+        'a workflow uploads an artifact to the host',
+        uploadRun?.status === 'success',
+        `status=${uploadRun?.status ?? 'none'}`,
+      );
+
+      if (uploadRun?.status === 'success') {
+        const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-live-'));
+        try {
+          const got = repoCli([
+            'run',
+            'download',
+            String(uploadRun.id),
+            '--dir',
+            dir,
+          ]);
+          const [artifact] = got.downloaded ?? [];
+          ok(
+            'run download writes a real artifact to disk',
+            artifact?.name === 'live-artifact' && artifact.size_in_bytes > 0,
+            `bytes=${artifact?.size_in_bytes ?? 0}`,
+          );
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
       }
     }
 

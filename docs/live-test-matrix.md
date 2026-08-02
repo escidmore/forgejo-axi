@@ -46,12 +46,20 @@ Each lane also provisions a protected base branch with a required status context
 
 Two of those exist only because a real server behaves unlike a fake one. Pagination is walked against 55 seeded labels, so the shared helper is proven to cross a page boundary without dropping a row — worth asserting because one Forgejo endpoint is already known to ignore `page` and `limit` entirely. And Forgejo computes mergeability in the background, answering `405 please try again later` until it settles, so the lane waits for the server rather than racing it. Checks are aggregated from a commit status seeded through the statuses API, which also pins down that an empty status set reads as `none` rather than as a failure.
 
-Not yet covered live, each needing more than a disposable repository: Actions runs with real content — job logs, cancel, and artifact download — which need a runner and a real workflow run; Actions run list, view, cancel, and download on 16, which needs the same runner and a run that produces an artifact; the `CONFLICT` race-recovery branch in `pr create`, which needs a competing create landed inside one invocation's pre-check-to-`POST` window; reviews from a second account, so the `APPROVED` and `REQUEST_CHANGES` verdicts and the stale and dismissed flags stay fixture-only; and transport behaviour — path prefixes, redirects, and CA files, which the CI workflow wires up for a host behind a private CA but which no run has yet exercised.
+Not yet covered live, each needing more than a disposable repository: the `CONFLICT` race-recovery branch in `pr create`, which needs a competing create landed inside one invocation's pre-check-to-`POST` window; reviews from a second account, so the `APPROVED` and `REQUEST_CHANGES` verdicts and the stale and dismissed flags stay fixture-only; and transport behaviour — path prefixes, redirects, and CA files, which the CI workflow wires up for a host behind a private CA but which no run has yet exercised.
 
-Of those, cancel is the one the code now routes around rather than waits on:
-`run cancel` returns an already-finished run unchanged without sending the
-request, so the contracted no-op holds whatever a real host would answer. This
-lane would still be the only thing that could tell us what that answer is.
+Artifact download is armed but unproven: the upload it depends on is the one
+step that reaches the host from inside the job container rather than from the
+runner, so it needs the workflow network to route to the instance. Where it does
+not, the probe fails on upload and the download assertion never runs — a
+property of the runner's network, not of the CLI.
+
+The cancel gap this lane was going to have to close is closed. A real 16.0.1
+answers a redundant cancel of a finished run with `204`, so the unconditional
+`POST` the CLI used to send was safe on this host. `run cancel` no longer sends
+it — the early return makes the contracted no-op hold by construction rather
+than by that answer staying `204` — but the race between the pre-check and the
+`POST` is cosmetic on a host that behaves this way, not a live defect.
 
 ## Running a lane
 
@@ -59,12 +67,16 @@ lane would still be the only thing that could tell us what that answer is.
 
 The Actions probes that need a runner are armed separately, by setting
 `FORGEJO_LIVE_RUNNER_LABEL` to a label a runner registered against
-`FORGEJO_LIVE_REPO` advertises. The lane then seeds two workflows onto their own
-probe branches — one that echoes a marker and uploads a small artifact, one that
-sleeps — and asserts job logs, artifact download, and the cancel of a genuinely
-running run against them. Scoping the runner to the disposable repository keeps
-the sleep-and-cancel probe off any shared CI capacity. Unset, the lane skips
-those probes and behaves exactly as it did before.
+`FORGEJO_LIVE_REPO` advertises. The lane then seeds three workflows onto their
+own probe branches — one that echoes a marker, one that uploads a small
+artifact, one that sleeps — and asserts job logs, artifact download, and the
+cancel of a genuinely running run against them. The marker and the artifact are
+separate workflows on purpose: upload is the step that needs the host reachable
+from the workflow network, and folding it into the first would let a runner
+network problem masquerade as broken job logs. Scoping the runner to the
+disposable repository keeps the sleep-and-cancel probe off any shared CI
+capacity. Unset, the lane skips those probes and behaves exactly as it did
+before.
 
 Endpoints and tokens come from the environment, never from the script: `FORGEJO_BASE_URL`/`FORGEJO_TOKEN` for the 16 lane and `FORGEJO_15_BASE_URL`/`FORGEJO_15_TOKEN` for the 15 lane, so the two lanes cannot share a credential. This repository supplies them from a sops-encrypted `.env.json` loaded by mise; the file is tracked because every value in it is ciphertext.
 
