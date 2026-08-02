@@ -48,11 +48,15 @@ Two of those exist only because a real server behaves unlike a fake one. Paginat
 
 Not yet covered live, each needing more than a disposable repository: the `CONFLICT` race-recovery branch in `pr create`, which needs a competing create landed inside one invocation's pre-check-to-`POST` window; reviews from a second account, so the `APPROVED` and `REQUEST_CHANGES` verdicts and the stale and dismissed flags stay fixture-only; and transport behaviour — path prefixes, redirects, and CA files, which the CI workflow wires up for a host behind a private CA but which no run has yet exercised.
 
-Artifact download is armed but unproven: the upload it depends on is the one
-step that reaches the host from inside the job container rather than from the
-runner, so it needs the workflow network to route to the instance. Where it does
-not, the probe fails on upload and the download assertion never runs — a
-property of the runner's network, not of the CLI.
+Artifact upload is the one step that reaches the host from inside the job
+container rather than from the runner, so it is the first thing to break when
+the workflow network cannot resolve the instance. On a runner whose temporary
+`WORKFLOW-*` network has broken DNS it fails as a `CreateArtifact` request
+timeout after five retries — which reads like a slow host rather than the
+`EAI_AGAIN` it is — and pinning the runner to a real container network fixes it.
+That is why the upload has a workflow of its own: folded into the marker
+workflow, a runner network fault would present as broken job logs and a failed
+run instead.
 
 The cancel gap this lane was going to have to close is closed. A real 16.0.1
 answers a redundant cancel of a finished run with `204`, so the unconditional
