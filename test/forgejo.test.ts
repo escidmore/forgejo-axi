@@ -207,6 +207,82 @@ describe('normalized checks', () => {
       matched: [],
     },
     {
+      name: 'an unbalanced brace matches nothing',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci{a,b'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'a trailing backslash matches nothing',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci\\'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      // Neither side rejects this one: gobwas builds a range nothing satisfies,
+      // so the rule stays and goes unmatched. Reading it as a range that cannot
+      // be met is the agreeing answer, not the fail-closed one.
+      name: 'a reversed range is a range nothing satisfies',
+      statuses: [{ context: 'ci1', status: 'success' }],
+      required: ['ci[9-0]'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      // gobwas matches runes, so `?` covers a character outside the basic
+      // plane whole rather than matching half a surrogate pair.
+      name: 'a question mark matches one astral rune',
+      statuses: [{ context: 'ci/\u{1F527}', status: 'success' }],
+      required: ['ci/?'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/\u{1F527}'],
+    },
+    {
+      name: 'two question marks do not match one astral rune',
+      statuses: [{ context: 'ci/\u{1F527}', status: 'success' }],
+      required: ['ci/??'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'brace alternation nests',
+      statuses: [
+        { context: 'ci/e2e', status: 'success' },
+        { context: 'ci/unit', status: 'failure' },
+      ],
+      required: ['ci/{unit,{e2e,lint}}'],
+      state: 'failure',
+      requiredState: 'failure',
+      passes: false,
+      matched: ['ci/e2e', 'ci/unit'],
+    },
+    {
+      // A context names itself, so a pattern with several stars must not cost
+      // one pass per way of splitting the value between them. Translated to a
+      // backtracking expression this pair takes about a minute; the guard is
+      // the test timeout, so a regression here reads as a hang, not a wrong
+      // answer.
+      name: 'many stars against a long context stay cheap',
+      statuses: [{ context: 'a'.repeat(60), status: 'success' }],
+      required: ['*a*a*a*a*a*a*a*a*a*a*x'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
       name: 'required glob folds several matches to the worst failing state',
       statuses: [
         { context: 'ci/unit', status: 'success' },

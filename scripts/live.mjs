@@ -1151,27 +1151,35 @@ try {
     );
   }
 
-  // ---- a required pattern whose star must cross a slash --------------------
+  // ---- required patterns in Forgejo's own glob dialect ----------------------
   // Forgejo compiles required contexts with glob.Compile and no separator, so
-  // its `*` crosses `/`. A rule of `live*` against a reported `live/crossing`
-  // is the smallest case that separates that dialect from one where `*` stops
-  // at the separator, which is what the CLI used to do.
+  // `*` and `?` cross `/`. One reported Check of `live/crossing` satisfies all
+  // four rules below, each exercising a different construct: a star that has
+  // to cross a separator, a `?` that has to land on one, a class, and brace
+  // alternation. Escapes and astral runes stay in the unit table — a Check
+  // named `live*` is not worth provisioning against a real host.
   //
   // The host is the oracle: settle polls Forgejo's own `mergeable`, computed
-  // server-side from the same protection rule. Asserting both sides together
-  // is what makes this an agreement test rather than a restatement of our own
-  // matcher — if either the CLI or Forgejo moves, they stop agreeing here.
+  // server-side from these same rules. The agreement assertion compares the
+  // two verdicts rather than naming either, so it holds whichever way they
+  // move; the assertion above it pins what the host decided, without which
+  // two systems that both refused would agree and prove nothing.
   const crossBase = `${BRANCH}-crossing`;
   const crossHead = `${BRANCH}-crossing-head`;
   await probeBranch(crossBase);
   const crossRule = await raw('POST', `repos/${REPO}/branch_protections`, {
     branch_name: crossBase,
     enable_status_check: true,
-    status_check_contexts: ['live*'],
+    status_check_contexts: [
+      'live*',
+      'live/cross?ng',
+      'live[!x]*',
+      'live/{crossing,other}',
+    ],
   });
   if (crossRule.status === 201) created.protections.push(crossBase);
   ok(
-    'provision a protected branch requiring a slash-crossing pattern',
+    'provision a protected branch requiring several glob constructs',
     crossRule.status === 201,
     `status=${crossRule.status}`,
   );
@@ -1184,7 +1192,7 @@ try {
     '--base',
     crossBase,
     '--title',
-    'live: slash-crossing required context',
+    'live: required contexts in the glob dialect',
   ]);
   const crossNumber = crossPull.pull_request.number;
   created.pulls.push(crossNumber);
@@ -1195,13 +1203,18 @@ try {
     'mergeability',
     String(crossNumber),
   ]).mergeability;
-  ok(
-    'a slash-crossing required pattern agrees with the host',
-    hostMerges === true &&
-      crossing.checks_pass === true &&
-      crossing.mergeable === true,
+  const crossNote =
     `forgejo_mergeable=${crossing.forgejo_mergeable} checks_pass=${crossing.checks_pass} ` +
-      `settled=${hostMerges} reasons=${JSON.stringify(crossing.reasons)}`,
+    `settled=${hostMerges} reasons=${JSON.stringify(crossing.reasons)}`;
+  ok(
+    'the host counts one Check as satisfying every glob construct',
+    hostMerges === true,
+    crossNote,
+  );
+  ok(
+    'required-context matching agrees with the host',
+    crossing.checks_pass === hostMerges,
+    crossNote,
   );
 
   // ---- label reconcile, collisions and archived state ----------------------
