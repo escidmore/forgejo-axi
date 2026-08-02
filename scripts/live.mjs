@@ -767,6 +767,14 @@ try {
     message: 'live: seed base',
   });
   await probeBranch(BRANCH);
+  // Only a long line pushes a hunk past the ceiling. Forgejo anchors diff_hunk
+  // to the hunk header plus the commented line, so a file of any length still
+  // yields a hunk of tens of characters.
+  await raw('POST', `repos/${REPO}/contents/${BRANCH}-long.txt`, {
+    content: Buffer.from(`${'x'.repeat(600)}\n`).toString('base64'),
+    message: 'live: seed long line',
+    branch: BRANCH,
+  });
 
   const pr = repoCli([
     'pr',
@@ -892,6 +900,11 @@ try {
     body: 'live probe review',
     comments: [
       { path: `${BRANCH}.txt`, new_position: 1, body: 'live inline probe' },
+      {
+        path: `${BRANCH}-long.txt`,
+        new_position: 1,
+        body: 'live long-line probe',
+      },
     ],
   });
   ok(
@@ -922,6 +935,17 @@ try {
       inline.diff_hunk_truncated === false &&
       inline.diff_hunk_length === [...inline.diff_hunk].length,
     `length=${inline?.diff_hunk_length} truncated=${inline?.diff_hunk_truncated}`,
+  );
+  const longInline = probe?.comments.find(
+    (comment) => comment.path === `${BRANCH}-long.txt`,
+  );
+  const cappedPoints = [...(longInline?.diff_hunk ?? '')].length;
+  ok(
+    'a diff hunk past the ceiling caps at 500 and reports its whole length',
+    longInline?.diff_hunk_truncated === true &&
+      cappedPoints === 500 &&
+      longInline.diff_hunk_length > 500,
+    `length=${longInline?.diff_hunk_length} capped=${cappedPoints}`,
   );
 
   // The expected-head guard must refuse a stale head rather than merge it.
@@ -1361,6 +1385,7 @@ try {
   // run.
   for (const file of [
     `${BRANCH}-base.txt`,
+    `${BRANCH}-long.txt`,
     ...created.branches.map((branch) => `${branch}.txt`),
   ]) {
     const head = await discard('GET', `repos/${REPO}/contents/${file}`);
