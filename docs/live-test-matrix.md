@@ -48,6 +48,11 @@ Two of those exist only because a real server behaves unlike a fake one. Paginat
 
 Not yet covered live, each needing more than a disposable repository: Actions runs with real content — job logs, cancel, and artifact download — which need a runner and a real workflow run; Actions run list, view, cancel, and download on 16, which needs the same runner and a run that produces an artifact; the `CONFLICT` race-recovery branch in `pr create`, which needs a competing create landed inside one invocation's pre-check-to-`POST` window; reviews from a second account, so the `APPROVED` and `REQUEST_CHANGES` verdicts and the stale and dismissed flags stay fixture-only; and transport behaviour — path prefixes, redirects, and CA files, which the CI workflow wires up for a host behind a private CA but which no run has yet exercised.
 
+Of those, cancel is the one the code now routes around rather than waits on:
+`run cancel` returns an already-finished run unchanged without sending the
+request, so the contracted no-op holds whatever a real host would answer. This
+lane would still be the only thing that could tell us what that answer is.
+
 ## Running a lane
 
 `npm run test:live -- 15` or `npm run test:live -- 16`. It is deliberately outside `npm run check`.
