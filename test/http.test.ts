@@ -377,6 +377,93 @@ describe('HTTP security behavior', () => {
     });
   });
 
+  it('refuses a body past the transport size ceiling', async () => {
+    const server = await startServer((_request, response) => {
+      // The client destroys the socket mid-body, so the writes it abandons
+      // must not fail the server.
+      response.on('error', () => {});
+      response.writeHead(200, { 'content-type': 'application/json' });
+      const megabyte = Buffer.alloc(1024 * 1024, 0x61);
+      for (let written = 0; written < 17; written += 1)
+        response.write(megabyte);
+      response.end();
+    });
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    await expect(
+      new ForgejoHttpClient(config).api({ path: 'huge' }),
+    ).rejects.toMatchObject({ code: 'RESPONSE_TOO_LARGE' });
+  });
+
+  it('streams a body to a file and never leaves a partial one behind', async () => {
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url.endsWith('good')) {
+        response.writeHead(200, {
+          'content-type': 'application/octet-stream',
+        });
+        response.end('artifact-bytes');
+        return;
+      }
+      if (recorded.url.endsWith('moved')) {
+        response.writeHead(302, {
+          location: recorded.url.replace('moved', 'good'),
+        });
+        response.end();
+        return;
+      }
+      if (recorded.url.endsWith('cut')) {
+        response.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': '100',
+        });
+        response.write('half-an-artifact');
+        response.destroy();
+        return;
+      }
+      json(response, 500, { message: 'boom' });
+    });
+    servers.push(server);
+    const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-test-download-'));
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    const client = new ForgejoHttpClient(config);
+    try {
+      const good = join(dir, 'good.bin');
+      const response = await client.api<number>({
+        path: 'good',
+        raw: true,
+        file: good,
+      });
+      expect(response.data).toBe(14);
+      expect(await readFile(good, 'utf8')).toBe('artifact-bytes');
+
+      const failed = join(dir, 'failed.bin');
+      await expect(
+        client.api({ path: 'bad', raw: true, file: failed }),
+      ).rejects.toMatchObject({ code: 'API_ERROR' });
+      await expect(readFile(failed)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      // A body that dies partway is the way a real download fails, and the
+      // file it was writing must not survive as a truncated artifact.
+      const cut = join(dir, 'cut.bin');
+      await expect(
+        client.api({ path: 'cut', raw: true, file: cut }),
+      ).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+      await expect(readFile(cut)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      // The sink outlives a redirect, so the body lands once, at the target.
+      const moved = join(dir, 'moved.bin');
+      const followed = await client.api<number>({
+        path: 'moved',
+        raw: true,
+        file: moved,
+      });
+      expect(followed.data).toBe(14);
+      expect(await readFile(moved, 'utf8')).toBe('artifact-bytes');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('enforces the configured request timeout', async () => {
     const server = await startServer(async (_request, response) => {
       await new Promise((resolve) => setTimeout(resolve, 50));

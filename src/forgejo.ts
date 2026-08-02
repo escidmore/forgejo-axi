@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   evaluateChecks,
@@ -1127,15 +1127,16 @@ export class ForgejoService {
     for (const artifact of page.items) {
       const artifactName = requireSafeArtifactName(artifact.name);
       const artifactId = requireArtifactId(artifact.id);
-      // ponytail: whole zip buffered in memory; stream the transport if artifacts outgrow RAM
-      const response = await this.http.api<Buffer>({
-        path: `${repoPath(repo)}/actions/artifacts/${artifactId}/zip`,
-        accept: 'application/octet-stream',
-        raw: true,
-      });
       const path = join(dir, `${artifactName}.zip`);
+      let written: number;
       try {
-        await writeFile(path, response.data, { flag: 'wx' });
+        const response = await this.http.api<number>({
+          path: `${repoPath(repo)}/actions/artifacts/${artifactId}/zip`,
+          accept: 'application/octet-stream',
+          raw: true,
+          file: path,
+        });
+        written = response.data;
       } catch (error) {
         if (isNodeError(error) && error.code === 'EEXIST') {
           throw new ForgejoAxiError(
@@ -1148,7 +1149,7 @@ export class ForgejoService {
       }
       downloaded.push({
         name: artifactName,
-        size_in_bytes: artifact.size_in_bytes ?? response.data.length,
+        size_in_bytes: artifact.size_in_bytes ?? written,
         path,
       });
     }
