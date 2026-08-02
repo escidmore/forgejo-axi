@@ -1152,16 +1152,15 @@ try {
   }
 
   // ---- a required pattern whose star must cross a slash --------------------
-  // minimatch stops `*` at `/`; Forgejo compiles required contexts with
-  // glob.Compile and no separator, so its `*` crosses. A rule of `live*` against
-  // a reported `live/crossing` is the smallest case that separates the two, and
-  // the host itself is the oracle: settle polls Forgejo's own `mergeable`, which
-  // it computes server-side from the same protection rule.
+  // Forgejo compiles required contexts with glob.Compile and no separator, so
+  // its `*` crosses `/`. A rule of `live*` against a reported `live/crossing`
+  // is the smallest case that separates that dialect from one where `*` stops
+  // at the separator, which is what the CLI used to do.
   //
-  // This pins a known divergence rather than asserting agreement, so it fails
-  // from either side. If Forgejo stops crossing `/`, settle goes false; if the
-  // CLI is changed to match Forgejo's dialect, checks_pass goes true. Either
-  // way the pin has to be updated deliberately.
+  // The host is the oracle: settle polls Forgejo's own `mergeable`, computed
+  // server-side from the same protection rule. Asserting both sides together
+  // is what makes this an agreement test rather than a restatement of our own
+  // matcher — if either the CLI or Forgejo moves, they stop agreeing here.
   const crossBase = `${BRANCH}-crossing`;
   const crossHead = `${BRANCH}-crossing-head`;
   await probeBranch(crossBase);
@@ -1197,10 +1196,10 @@ try {
     String(crossNumber),
   ]).mergeability;
   ok(
-    'a slash-crossing required pattern reads missing here while the host merges it',
+    'a slash-crossing required pattern agrees with the host',
     hostMerges === true &&
-      crossing.checks_pass === false &&
-      crossing.mergeable === false,
+      crossing.checks_pass === true &&
+      crossing.mergeable === true,
     `forgejo_mergeable=${crossing.forgejo_mergeable} checks_pass=${crossing.checks_pass} ` +
       `settled=${hostMerges} reasons=${JSON.stringify(crossing.reasons)}`,
   );

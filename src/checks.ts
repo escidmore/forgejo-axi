@@ -1,5 +1,3 @@
-import { minimatch } from 'minimatch';
-
 /** Commit status as Forgejo reports it; the CLI calls these Checks. */
 export interface ApiStatus {
   id?: number;
@@ -66,15 +64,8 @@ export function evaluateChecks(
     ? (branch.status_check_contexts ?? [])
     : [];
   const required: RequiredCheck[] = patterns.map((pattern) => {
-    // ponytail: minimatch's `*` stops at `/` and skips leading dots; Forgejo
-    // compiles these patterns with `glob.Compile` and no separator, so its `*`
-    // crosses `/`. `ci*` matches `ci/unit` there but not here, and we report
-    // `missing` against a pull request the server will merge. Live-probed on
-    // Forgejo 15 and 16. Upgrade path: match with Forgejo's dialect instead,
-    // which is a contract change to `pr checks` and needs its own live cases.
-    const matched = statuses.filter((status) =>
-      minimatch(status.context, pattern, { nonegate: true, nocomment: true }),
-    );
+    const glob = compileContextPattern(pattern);
+    const matched = statuses.filter((status) => glob.test(status.context));
     return {
       context: pattern,
       state:
@@ -109,6 +100,101 @@ export function evaluateChecks(
       status_checks_enabled: statusChecksEnabled,
     },
   };
+}
+
+/**
+ * Compiles one required-context pattern the way Forgejo matches it.
+ *
+ * Forgejo compiles required contexts with `glob.Compile(pattern)` and no
+ * separator argument, so `*` and `?` cross `/` and a leading dot carries no
+ * special meaning. minimatch cannot be configured to cross a separator, so the
+ * dialect is compiled here rather than delegated. Live-probed on Forgejo 15
+ * and 16.
+ *
+ * Without separators `*` and `**` both match any run of characters, `?`
+ * matches any one character, `[abc]`, `[a-z]` and `[!abc]` are classes,
+ * `{a,b}` alternates, and `\` escapes the next character. Everything else is a
+ * literal.
+ *
+ * Forgejo logs and drops a pattern gobwas rejects, so a malformed rule cannot
+ * block a merge there. Here it matches nothing and reads `missing`, which
+ * blocks. That is the fail-closed direction and it surfaces the broken rule
+ * rather than ignoring it.
+ */
+function compileContextPattern(pattern: string): RegExp {
+  const NEVER = /(?!)/;
+  let source = '';
+  let depth = 0;
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index] as string;
+    if (char === '\\') {
+      if (index + 1 >= pattern.length) return NEVER;
+      index += 1;
+      source += escapeLiteral(pattern[index] as string);
+    } else if (char === '*') {
+      // Without a separator gobwas treats `**` exactly as `*`; collapsing the
+      // run also keeps the expression from backtracking over itself.
+      while (pattern[index + 1] === '*') index += 1;
+      source += '[\\s\\S]*';
+    } else if (char === '?') {
+      source += '[\\s\\S]';
+    } else if (char === '{') {
+      depth += 1;
+      source += '(?:';
+    } else if (char === ',' && depth > 0) {
+      source += '|';
+    } else if (char === '}' && depth > 0) {
+      depth -= 1;
+      source += ')';
+    } else if (char === '[') {
+      const compiled = compileClass(pattern, index);
+      if (!compiled) return NEVER;
+      source += compiled.source;
+      index = compiled.end;
+    } else {
+      source += escapeLiteral(char);
+    }
+  }
+  if (depth > 0) return NEVER;
+  return new RegExp(`^${source}$`);
+}
+
+/** Reads one `[...]` class, or null if the pattern gobwas would reject. */
+function compileClass(
+  pattern: string,
+  start: number,
+): { source: string; end: number } | null {
+  let index = start + 1;
+  const negated = pattern[index] === '!';
+  if (negated) index += 1;
+  let body = '';
+  for (; index < pattern.length; index += 1) {
+    const char = pattern[index] as string;
+    if (char === ']') {
+      // gobwas requires a non-empty class.
+      return body
+        ? { source: `[${negated ? '^' : ''}${body}]`, end: index }
+        : null;
+    }
+    if (char === '\\') {
+      if (index + 1 >= pattern.length) return null;
+      index += 1;
+      body += escapeClassChar(pattern[index] as string);
+      continue;
+    }
+    // `-` stays bare so `a-z` is a range; at either edge JS reads it as a
+    // literal, which is what gobwas does there too.
+    body += char === '-' ? '-' : escapeClassChar(char);
+  }
+  return null;
+}
+
+function escapeLiteral(char: string): string {
+  return /[\\^$.*+?()[\]{}|]/.test(char) ? `\\${char}` : char;
+}
+
+function escapeClassChar(char: string): string {
+  return /[\\\]^]/.test(char) ? `\\${char}` : char;
 }
 
 function latestStatuses(input: ApiStatus[]): NormalizedStatus[] {

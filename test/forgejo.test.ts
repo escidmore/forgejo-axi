@@ -96,23 +96,111 @@ describe('normalized checks', () => {
       passes: true,
     },
     {
-      // minimatch's `*` stops at `/`, so a pattern anchored above the separator
-      // does not match a context below it. Forgejo's own matcher crosses `/`
-      // and calls this satisfied — the divergence CONTEXT.md records under
-      // Required check. These two cases pin our side of it, so changing the
-      // matcher cannot pass unnoticed.
-      name: 'a star does not cross a slash in a required pattern',
+      // Forgejo compiles required contexts with no separator, so `*` crosses
+      // `/`. These cases pin that dialect; before it was matched here, a rule
+      // of `ci*` read missing against a pull request the server would merge.
+      name: 'a star crosses a slash in a required pattern',
       statuses: [{ context: 'ci/unit', status: 'success' }],
       required: ['ci*'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/unit'],
+    },
+    {
+      name: 'a bare star matches a slashed context',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['*'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/unit'],
+    },
+    {
+      name: 'a question mark matches one character and crosses a slash',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci?unit'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/unit'],
+    },
+    {
+      name: 'a question mark does not match two characters',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci?nit'],
       state: 'success',
       requiredState: 'missing',
       passes: false,
       matched: [],
     },
     {
-      name: 'a bare star does not match a slashed context',
-      statuses: [{ context: 'ci/unit', status: 'success' }],
+      name: 'a character class selects among contexts',
+      statuses: [
+        { context: 'ci1', status: 'success' },
+        { context: 'ci9', status: 'failure' },
+      ],
+      required: ['ci[0-4]'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci1'],
+    },
+    {
+      name: 'a negated character class excludes a context',
+      statuses: [
+        { context: 'ci1', status: 'failure' },
+        { context: 'ci9', status: 'success' },
+      ],
+      required: ['ci[!0-4]'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci9'],
+    },
+    {
+      name: 'brace alternation matches either branch',
+      statuses: [
+        { context: 'ci/unit', status: 'success' },
+        { context: 'ci/lint', status: 'success' },
+        { context: 'ci/e2e', status: 'failure' },
+      ],
+      required: ['ci/{unit,lint}'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/lint', 'ci/unit'],
+    },
+    {
+      name: 'a backslash escapes a wildcard into a literal',
+      statuses: [
+        { context: 'ci*', status: 'success' },
+        { context: 'ci/unit', status: 'failure' },
+      ],
+      required: ['ci\\*'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci*'],
+    },
+    {
+      // A leading dot is ordinary here. minimatch hid these behind its `dot`
+      // option, so a rule of `*` used to skip a Check named `.drone`.
+      name: 'a star matches a context that begins with a dot',
+      statuses: [{ context: '.drone/build', status: 'success' }],
       required: ['*'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['.drone/build'],
+    },
+    {
+      // Forgejo logs and drops a pattern gobwas rejects, so it cannot block a
+      // merge there. Here it matches nothing and reads missing, which blocks —
+      // the fail-closed direction, and it surfaces the broken rule.
+      name: 'a malformed pattern matches nothing rather than everything',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci[0-4'],
       state: 'success',
       requiredState: 'missing',
       passes: false,
@@ -143,7 +231,7 @@ describe('normalized checks', () => {
       matched: ['ci/lint', 'ci/unit'],
     },
     {
-      name: 'treats leading bang as a literal, not minimatch negation',
+      name: 'treats a leading bang as a literal, not a negation',
       statuses: [{ context: 'other', status: 'success' }],
       required: ['!ci'],
       state: 'success',

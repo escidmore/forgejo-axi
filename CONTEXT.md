@@ -29,12 +29,21 @@ Patterns are globs, not exact names — one pattern may match several Checks, in
 which case the worst state wins, or match none at all, which is the distinct state
 `missing`.
 
-The CLI and Forgejo do not currently agree on the glob dialect. Forgejo compiles
-required contexts with `glob.Compile` and no separator, so its `*` crosses `/`;
-the CLI matches with minimatch, whose `*` stops at `/` and which additionally
-refuses to match a leading dot. A pattern of `ci*` therefore matches a Check named
-`ci/unit` on the server but not here, and the CLI reports `missing` against a pull
-request Forgejo will merge. Probed live against Forgejo 15 and 16.
+The dialect is Forgejo's. Forgejo compiles required contexts with
+`glob.Compile` and no separator, so `*` and `?` cross `/` and a leading dot is
+ordinary; the CLI compiles the same dialect rather than delegating, because
+minimatch stops `*` at a separator and cannot be configured otherwise. A pattern
+of `ci*` matches a Check named `ci/unit` on both. Agreement is asserted live
+against Forgejo 15 and 16.
+
+The two still part on a malformed pattern. Forgejo logs and drops one gobwas
+rejects, so it cannot block a merge there; here it matches nothing and reads
+`missing`, which blocks. That is the fail-closed direction and it surfaces the
+broken rule rather than ignoring it.
+
+They also part on how an unmatched pattern is named. Forgejo folds it into
+`pending`; the CLI reports the distinct `missing`, which is strictly more
+informative and never green either way.
 
 ## Run
 

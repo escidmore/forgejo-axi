@@ -44,8 +44,7 @@
   },
   "dependencies": {
     "@toon-format/toon": "4.1.0",
-    "axi-sdk-js": "0.1.9",
-    "minimatch": "10.2.6"
+    "axi-sdk-js": "0.1.9"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",
