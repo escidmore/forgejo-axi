@@ -10,6 +10,7 @@
 //   FORGEJO_LIVE_REPO=owner/disposable          (arms the harness)
 //   FORGEJO_EXPECT_VERSION=16.0                 (optional; overrides the lane)
 //   FORGEJO_CA_FILE=/path/to/ca.pem             (optional)
+//   FORGEJO_LIVE_RUNNER_LABEL=live              (optional; arms the runner probes)
 //
 // This mutates FORGEJO_LIVE_REPO. Three independent guards must pass first: the
 // harness reads its target from FORGEJO_LIVE_REPO rather than the ordinary
@@ -21,6 +22,9 @@
 import { Buffer } from 'node:buffer';
 import { execFile, execFileSync } from 'node:child_process';
 import console from 'node:console';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { URL } from 'node:url';
@@ -64,6 +68,11 @@ const REPO = required('FORGEJO_LIVE_REPO');
 // would pass against a host that never said what it was.
 const EXPECT_VERSION = process.env['FORGEJO_EXPECT_VERSION'] || LANE.expect;
 const CA_FILE = process.env['FORGEJO_CA_FILE'];
+// Arms the runner-dependent probes, and names the label the seeded workflows
+// ask for. Unset, this lane runs exactly as it did before a runner existed —
+// the paths below are the ones docs/live-test-matrix.md records as uncovered
+// precisely because no fake server can answer them.
+const RUNNER_LABEL = process.env['FORGEJO_LIVE_RUNNER_LABEL'];
 
 const CONN = [
   '--base-url',
@@ -271,6 +280,43 @@ async function probeBranch(name, from) {
   }
   created.branches.push(name);
   return response;
+}
+
+const TERMINAL_RUN = new Set(['success', 'failure', 'cancelled', 'skipped']);
+
+// Seeding a workflow onto its own branch makes the push that creates the branch
+// the event that triggers the run, so one request both installs and fires it.
+// The action reference resolves through the host's configured actions source,
+// so a host pointed somewhere other than code.forgejo.org needs it adjusted.
+async function workflowBranch(name, yaml) {
+  const response = await raw(
+    'POST',
+    `repos/${REPO}/contents/.forgejo/workflows/${name}.yml`,
+    {
+      content: Buffer.from(yaml).toString('base64'),
+      message: `live: ${name}`,
+      new_branch: name,
+    },
+  );
+  if (response.status !== 201) {
+    throw new Error(`could not seed workflow ${name} => ${response.status}`);
+  }
+  created.branches.push(name);
+  return response;
+}
+
+// Forgejo queues the run after the push returns, and a runner claims it some
+// time after that. Returning null rather than throwing keeps an idle or
+// mislabelled runner reported as one failed assertion instead of cancelling
+// every probe that follows it.
+async function waitForRun(branch, done, what, tries = 60) {
+  for (let i = 0; i < tries; i += 1) {
+    const run = (repoCli(['run', 'list', '--branch', branch]).runs ?? [])[0];
+    if (run && done(run)) return run;
+    await sleep(2000);
+  }
+  console.log(`  timed out after ${tries * 2}s waiting for ${what}`);
+  return null;
 }
 
 try {
@@ -500,6 +546,173 @@ try {
     ok(
       'run family reports unsupported from the probe',
       unsupported.supported === false && unsupported.capability === 'runs',
+    );
+  }
+
+  // ---- run family, runner required -----------------------------------------
+  // Job logs, artifact download, and the cancel of a genuinely running run are
+  // the paths docs/live-test-matrix.md records as uncovered: a fake server can
+  // return whatever shape we ask it for, so only a real runner settles them.
+  if (RUNNER_LABEL && probed.capabilities?.runs === true) {
+    const marker = `live-marker-${BRANCH}`;
+    const quick = `${BRANCH}-wf-quick`;
+    // Deliberately one step and no action: whether a run reaches success and
+    // whether its logs come back must not depend on artifact upload, which
+    // reaches the host from inside the job container and so fails for reasons
+    // of its own.
+    await workflowBranch(
+      quick,
+      [
+        'name: live-quick',
+        'on: [push]',
+        'jobs:',
+        '  quick:',
+        `    runs-on: ${RUNNER_LABEL}`,
+        '    steps:',
+        `      - run: echo "${marker}"`,
+        '',
+      ].join('\n'),
+    );
+    const quickRun = await waitForRun(
+      quick,
+      (run) => TERMINAL_RUN.has(run.status),
+      'the seeded workflow to finish',
+    );
+    ok(
+      'a pushed workflow produces a real run',
+      quickRun?.status === 'success',
+      `status=${quickRun?.status ?? 'none'}`,
+    );
+
+    if (quickRun && probed.capabilities?.actions_job_logs === true) {
+      const viewed = repoCli(['run', 'view', String(quickRun.id), '--log']);
+      const logs = (viewed.jobs ?? []).map((job) => job.log ?? '');
+      ok(
+        'run view --log decodes real runner output',
+        logs.some((log) => log.includes(marker)),
+        `jobs=${logs.length}`,
+      );
+    }
+
+    if (probed.capabilities?.run_artifacts === true) {
+      const upload = `${BRANCH}-wf-artifact`;
+      // No checkout: the job writes the file it uploads, so this depends on one
+      // action rather than two.
+      await workflowBranch(
+        upload,
+        [
+          'name: live-artifact',
+          'on: [push]',
+          'jobs:',
+          '  upload:',
+          `    runs-on: ${RUNNER_LABEL}`,
+          '    steps:',
+          `      - run: mkdir -p out && echo "${marker}" > out/live.txt`,
+          '      - uses: forgejo/upload-artifact@v4',
+          '        with:',
+          '          name: live-artifact',
+          '          path: out',
+          '',
+        ].join('\n'),
+      );
+      const uploadRun = await waitForRun(
+        upload,
+        (run) => TERMINAL_RUN.has(run.status),
+        'the artifact workflow to finish',
+      );
+      // Upload runs from inside the job container rather than from the runner,
+      // so it is the first probe here to need the host reachable from the
+      // workflow network.
+      ok(
+        'a workflow uploads an artifact to the host',
+        uploadRun?.status === 'success',
+        `status=${uploadRun?.status ?? 'none'}`,
+      );
+
+      if (uploadRun?.status === 'success') {
+        const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-live-'));
+        try {
+          const got = repoCli([
+            'run',
+            'download',
+            String(uploadRun.id),
+            '--dir',
+            dir,
+          ]);
+          const [artifact] = got.downloaded ?? [];
+          ok(
+            'run download writes a real artifact to disk',
+            artifact?.name === 'live-artifact' && artifact.size_in_bytes > 0,
+            `bytes=${artifact?.size_in_bytes ?? 0}`,
+          );
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      }
+    }
+
+    if (probed.capabilities?.run_cancel === true) {
+      const slow = `${BRANCH}-wf-sleep`;
+      await workflowBranch(
+        slow,
+        [
+          'name: live-sleep',
+          'on: [push]',
+          'jobs:',
+          '  slow:',
+          `    runs-on: ${RUNNER_LABEL}`,
+          '    steps:',
+          '      - run: sleep 120',
+          '',
+        ].join('\n'),
+      );
+      const running = await waitForRun(
+        slow,
+        (run) => run.status === 'running',
+        'the sleeping workflow to start',
+      );
+      ok('a seeded workflow reaches running', running !== null);
+
+      if (running) {
+        const stopped = repoCli(['run', 'cancel', String(running.id)]);
+        ok(
+          'run cancel stops a genuinely running run',
+          stopped.cancelled === true,
+          `status=${stopped.run?.status}`,
+        );
+        const settled = await waitForRun(
+          slow,
+          (run) => TERMINAL_RUN.has(run.status),
+          'the cancelled run to settle',
+        );
+        const repeat = repoCli(['run', 'cancel', String(running.id)], {
+          allowFail: true,
+        });
+        ok(
+          'cancelling a finished run is the contracted no-op',
+          repeat.cancelled === false && repeat.run?.status === settled?.status,
+          `status=${repeat.run?.status}`,
+        );
+        // The CLI now returns before sending this, so only a direct call can
+        // say what the host would have answered. Recorded rather than asserted:
+        // both answers are legitimate, and which one it is decides whether the
+        // pre-check needs to grow a CONFLICT recovery for the run that finishes
+        // between the read and the POST.
+        const direct = await globalThis.fetch(
+          `${API}/repos/${REPO}/actions/runs/${running.id}/cancel`,
+          { method: 'POST', headers: { authorization: `token ${TOKEN}` } },
+        );
+        ok(
+          'host answered a redundant cancel of a finished run',
+          direct.status > 0,
+          `http=${direct.status} (2xx: the old unconditional POST was safe)`,
+        );
+      }
+    }
+  } else if (!RUNNER_LABEL) {
+    console.log(
+      'runner probes skipped — set FORGEJO_LIVE_RUNNER_LABEL to a label the ' +
+        'repository runner advertises',
     );
   }
 

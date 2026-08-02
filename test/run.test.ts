@@ -426,6 +426,42 @@ describe('run command family', () => {
       cancelled: false,
       run: { id: 9, status: 'cancelled' },
     });
+    expect(
+      server.requests.filter((request) => request.url.includes('/cancel')),
+    ).toHaveLength(1);
+  });
+
+  it('leaves a finished run alone even when the host would reject the cancel', async () => {
+    const world = await load<RunWorld>(16);
+    // Every terminal status, so dropping one from DONE_RUN_STATUSES fails here.
+    for (const status of ['success', 'failure', 'cancelled', 'skipped']) {
+      const server = await startServer((_request, response, recorded) => {
+        const url = new URL(recorded.url, 'http://fake');
+        if (url.pathname === '/swagger.v1.json')
+          return json(response, 200, world.swagger);
+        const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
+        if (path === '/actions/runs/9')
+          return json(response, 200, { ...world.run, status });
+        return json(response, 409, { message: 'run is already done' });
+      });
+      servers.push(server);
+
+      const result = await invoke([
+        'run',
+        'cancel',
+        ...connection(server),
+        '9',
+      ]);
+      expect(result.exitCode, status).toBeUndefined();
+      expect(parseJson(result.output), status).toMatchObject({
+        cancelled: false,
+        run: { id: 9, status },
+      });
+      expect(
+        server.requests.filter((request) => request.url.includes('/cancel')),
+        status,
+      ).toHaveLength(0);
+    }
   });
 
   it('downloads artifacts into a created directory and never overwrites one', async () => {
