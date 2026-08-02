@@ -971,14 +971,14 @@ describe('label command family', () => {
     expect(failed.output).not.toContain('super-secret-token');
   });
 
-  it('encodes control characters rather than emitting them raw', async () => {
-    const escape = String.fromCharCode(27);
+  it('pins the encoded bytes for control characters, empty arrays, and # scalars', async () => {
+    const esc = String.fromCharCode(27);
     const server = await labelServer([
       {
         id: 7,
         name: 'bug',
         color: 'd73a4a',
-        description: `red${escape}[31m alert`,
+        description: `red${esc}[31m alert`,
       },
     ]);
     const listed = await invoke([
@@ -989,6 +989,7 @@ describe('label command family', () => {
       '--base-url',
       server.baseUrl,
     ]);
+    expect(listed.exitCode).toBeUndefined();
     expect(listed.output).toBe(
       'labels[1]{id,name,color,description,is_archived,api_url}:\n' +
         `  7,bug,"#d73a4a","red\\u001b[31m alert",false,"${server.baseUrl}/api/v1/repos/acme/widgets/labels/7"\n` +
@@ -1000,7 +1001,7 @@ describe('label command family', () => {
         '  displayed: 1\n' +
         '  truncated: false\n',
     );
-    expect(listed.output).not.toContain(escape);
+    expect(listed.output).not.toContain(esc);
 
     const empty = await labelServer([]);
     const none = await invoke([
@@ -1011,6 +1012,7 @@ describe('label command family', () => {
       '--base-url',
       empty.baseUrl,
     ]);
+    expect(none.exitCode).toBeUndefined();
     expect(none.output).toBe(
       'labels: []\n' +
         'page_info:\n' +
