@@ -274,10 +274,14 @@ describe('HTTP security behavior', () => {
       }>({ method: 'POST', path: 'mutate', body: { value: 'once' } });
       expect(response.data.ok).toBe(true);
       expect(
-        server.requests.map((request) => [request.method, request.body]),
+        server.requests.map((request) => [
+          request.method,
+          request.url,
+          request.body,
+        ]),
       ).toEqual([
-        ['POST', '{"value":"once"}'],
-        [method, body],
+        ['POST', '/api/v1/mutate', '{"value":"once"}'],
+        [method, '/api/v1/target', body],
       ]);
     },
   );
