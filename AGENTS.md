@@ -4,6 +4,7 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 - `docs/contract.md` is the compatibility authority for commands, output schemas, status semantics, and exit codes.
 - Run `npm run check` before committing; its tests use Forgejo 15/16 response fixtures plus fake HTTP/HTTPS servers.
+- `.pre-commit-config.yaml` runs the `npm run lint` pair — prettier and eslint — over staged files under [prek](https://github.com/j178/prek), so the cheapest half of `npm run check` cannot be skipped. Both hooks invoke this checkout's `node_modules`, which is why a fresh worktree needs its own `npm ci`: with none, `npx prettier` resolves a newer release from the registry than package-lock pins, calls a differently-formatted file clean, and CI then rejects it.
 - Live testing is required, not optional: before committing any change to API requests, response handling, or fixtures, run both live lanes locally (`npm run test:live -- 15` and `-- 16`, hosts from the mise/sops environment). The live lanes outrank the fixtures — when a real host and a fixture disagree, the fixture is wrong; fix the fixture to match the host, never the reverse. See `docs/live-test-matrix.md`.
 - Capabilities must come from runtime API probing, never version assumptions. Forgejo 15.0.5 remains a first-class target; unsupported Actions logs are not failed status checks.
 - Preserve canonical URL, token-scope/redaction, same-origin redirect, path-prefix, and expected-head merge protections when changing transport code.
