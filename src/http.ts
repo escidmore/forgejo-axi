@@ -1,5 +1,8 @@
+import { open, rm } from 'node:fs/promises';
 import http, { type IncomingHttpHeaders } from 'node:http';
 import https from 'node:https';
+import type { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { appendPath, type ConnectionConfig } from './config.js';
 import { ForgejoAxiError } from './errors.js';
 import { VERSION } from './version.js';
@@ -19,6 +22,11 @@ export interface RequestInput {
   allowEncodedSlash?: boolean;
   /** Skip JSON parsing and token redaction; `data` is the raw response Buffer. */
   raw?: boolean;
+  /**
+   * Stream a successful body to this path instead of buffering it, never
+   * overwriting an existing file; `data` is the number of bytes written.
+   */
+  file?: string;
 }
 
 export interface Paginated<T> {
@@ -32,6 +40,23 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 5;
 const MAX_PAGES = 100;
 const PAGE_SIZE = 50;
+/**
+ * A buffered body is bounded so a hostile or broken host cannot OOM the process
+ * mid-flow: an agent that dies cannot report what happened or roll back its
+ * intent, while a typed refusal is a definite answer. Bodies that are large by
+ * design stream to a `file` instead and are not buffered at all.
+ */
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
+const MAX_RAW_BODY_BYTES = 64 * 1024 * 1024;
+
+interface Attempt {
+  url: URL;
+  method: string;
+  body: string | undefined;
+  accept: string | undefined;
+  raw: boolean;
+  sink: Writable | undefined;
+}
 
 export class ForgejoHttpClient {
   constructor(private readonly config: ConnectionConfig) {}
@@ -139,35 +164,45 @@ export class ForgejoHttpClient {
     return { items, complete: false, pages: MAX_PAGES, total };
   }
 
-  private request<T>(
+  private async request<T>(
     input: RequestInput & { url: URL },
   ): Promise<HttpResponse<T>> {
     const url = input.url;
     for (const [key, value] of Object.entries(input.query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, String(value));
     }
-    const method = (input.method ?? 'GET').toUpperCase();
-    const body =
-      input.body === undefined ? undefined : JSON.stringify(input.body);
-    return this.requestWithRedirects<T>(
+    const attempt: Attempt = {
       url,
-      method,
-      body,
-      input.accept,
-      input.raw ?? false,
-      0,
-    );
+      method: (input.method ?? 'GET').toUpperCase(),
+      body: input.body === undefined ? undefined : JSON.stringify(input.body),
+      accept: input.accept,
+      raw: input.raw ?? false,
+      sink: undefined,
+    };
+    if (input.file === undefined)
+      return this.requestWithRedirects<T>(attempt, 0);
+    // Claiming the path with 'wx' before any traffic keeps the refusal to
+    // overwrite ahead of the download, and a failure removes only the file this
+    // call created.
+    const handle = await open(input.file, 'wx');
+    // The stream owns the descriptor from here; destroying it closes the file
+    // on the paths where the body never arrives.
+    const sink = handle.createWriteStream();
+    try {
+      return await this.requestWithRedirects<T>({ ...attempt, sink }, 0);
+    } catch (error) {
+      sink.destroy();
+      await rm(input.file, { force: true });
+      throw error;
+    }
   }
 
   private async requestWithRedirects<T>(
-    url: URL,
-    method: string,
-    body: string | undefined,
-    accept: string | undefined,
-    raw: boolean,
+    attempt: Attempt,
     redirects: number,
   ): Promise<HttpResponse<T>> {
-    const response = await this.requestOnce(url, method, body, accept, raw);
+    const { url, method, body, raw } = attempt;
+    const response = await this.requestOnce(attempt);
     if (!REDIRECT_STATUSES.has(response.status))
       return this.validate<T>(response, raw);
     const location = firstHeader(response.headers['location']);
@@ -206,22 +241,18 @@ export class ForgejoHttpClient {
     }
     const redirectedMethod = response.status === 303 ? 'GET' : method;
     return this.requestWithRedirects<T>(
-      target,
-      redirectedMethod,
-      redirectedMethod === 'GET' ? undefined : body,
-      accept,
-      raw,
+      {
+        ...attempt,
+        url: target,
+        method: redirectedMethod,
+        body: redirectedMethod === 'GET' ? undefined : body,
+      },
       redirects + 1,
     );
   }
 
-  private requestOnce(
-    url: URL,
-    method: string,
-    body: string | undefined,
-    accept: string | undefined,
-    raw: boolean,
-  ): Promise<HttpResponse<unknown>> {
+  private requestOnce(attempt: Attempt): Promise<HttpResponse<unknown>> {
+    const { url, method, body, accept, raw, sink } = attempt;
     const headers: Record<string, string | number> = {
       accept: accept ?? 'application/json',
       'user-agent': `forgejo-axi/${VERSION}`,
@@ -250,15 +281,45 @@ export class ForgejoHttpClient {
         );
       };
       const request = requestModule.request(url, options, (response) => {
-        const chunks: Buffer[] = [];
-        response.on('data', (chunk: Buffer | string) => {
-          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        });
+        const status = response.statusCode ?? 0;
         response.once('error', rejectOnce);
         response.once('close', () => {
           if (!response.complete) {
             rejectOnce(new Error('Forgejo response ended before the body'));
           }
+        });
+        // Only a success body streams; a redirect or error body stays buffered
+        // for the redirect and error paths to read.
+        if (sink && status >= 200 && status < 300) {
+          let written = 0;
+          response.on('data', (chunk: Buffer) => {
+            written += chunk.length;
+          });
+          pipeline(response, sink).then(() => {
+            if (settled) return;
+            settled = true;
+            resolve({ status, headers: response.headers, data: written });
+          }, rejectOnce);
+          return;
+        }
+        const limit = raw ? MAX_RAW_BODY_BYTES : MAX_BODY_BYTES;
+        const chunks: Buffer[] = [];
+        let size = 0;
+        response.on('data', (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += buffer.length;
+          if (size > limit) {
+            response.destroy();
+            rejectOnce(
+              new ForgejoAxiError(
+                `Forgejo response exceeded the ${limit}-byte limit`,
+                'RESPONSE_TOO_LARGE',
+                { details: { limit } },
+              ),
+            );
+            return;
+          }
+          chunks.push(buffer);
         });
         response.on('end', () => {
           if (settled) return;

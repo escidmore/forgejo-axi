@@ -64,6 +64,8 @@ Exit `0` means success or an idempotent no-op, `1` means runtime/API/security fa
 }
 ```
 
+Response bodies are bounded at the transport: 16 MiB parsed, 64 MiB raw. A body past its ceiling is refused with `RESPONSE_TOO_LARGE` (exit `1`) rather than buffered without limit. Artifact downloads stream to disk and are subject to neither ceiling.
+
 A command whose capability the connected host does not advertise returns an unsupported document rather than an error:
 
 ```json
@@ -150,6 +152,6 @@ A run identity is `{id, url, api_url, title, event, branch, head_sha, run_number
 
 `run cancel` reports `cancelled=true` only when the run was still actionable beforehand; cancelling an already finished run is exit `0`, `cancelled=false`, and returns the run unchanged.
 
-`run download` writes each artifact to `{--dir}/{name}.zip`, creating `--dir` and its parents when missing, and narrows to one artifact with `--name`. An existing file is never overwritten: the download fails with `ARTIFACT_EXISTS` (exit `1`) naming the path. An artifact name Forgejo returns that would escape the directory is refused as `INVALID_RESPONSE`. Artifacts are written one at a time, so a failure partway through leaves the artifacts already written on disk.
+`run download` writes each artifact to `{--dir}/{name}.zip`, creating `--dir` and its parents when missing, and narrows to one artifact with `--name`. An existing file is never overwritten: the download fails with `ARTIFACT_EXISTS` (exit `1`) naming the path. An artifact name Forgejo returns that would escape the directory is refused as `INVALID_RESPONSE`. Each artifact streams to its file rather than being held in memory, and a download that fails partway removes the file it was writing. Artifacts are written one at a time, so a failure partway through leaves the artifacts already written on disk.
 
 Capabilities are runtime-probed booleans, never version assumptions. If the Swagger document is unavailable, forbidden, rate-limited, malformed, times out, or returns a server error after the API version probe succeeds, status returns all capability booleans false with `probe.complete=false` instead of failing the entire status command. Forgejo 15 reports Actions job logs and Actions runs unsupported; Forgejo 16 reports support only when its runtime document advertises each route. Unsupported logs never alter commit-status semantics.
