@@ -258,7 +258,7 @@ const created = {
   milestone: null,
   pulls: [],
   branches: [],
-  protection: null,
+  protections: [],
 };
 
 // Every probe branch carries the per-run prefix, so cleanup can never reach a
@@ -1122,7 +1122,7 @@ try {
     enable_status_check: true,
     status_check_contexts: ['live/required'],
   });
-  if (protection.status === 201) created.protection = protBase;
+  if (protection.status === 201) created.protections.push(protBase);
   ok(
     'provision a protected base branch with a required context',
     protection.status === 201,
@@ -1187,6 +1187,72 @@ try {
       `required_state=${current.required_state} passes=${current.passes}`,
     );
   }
+
+  // ---- required patterns in Forgejo's own glob dialect ----------------------
+  // Forgejo compiles required contexts with glob.Compile and no separator, so
+  // `*` and `?` cross `/`. One reported Check of `live/crossing` satisfies all
+  // four rules below, each exercising a different construct: a star that has
+  // to cross a separator, a `?` that has to land on one, a class, and brace
+  // alternation. Escapes and astral runes stay in the unit table — a Check
+  // named `live*` is not worth provisioning against a real host.
+  //
+  // The host is the oracle: settle polls Forgejo's own `mergeable`, computed
+  // server-side from these same rules. The agreement assertion compares the
+  // two verdicts rather than naming either, so it holds whichever way they
+  // move; the assertion above it pins what the host decided, without which
+  // two systems that both refused would agree and prove nothing.
+  const crossBase = `${BRANCH}-crossing`;
+  const crossHead = `${BRANCH}-crossing-head`;
+  await probeBranch(crossBase);
+  const crossRule = await raw('POST', `repos/${REPO}/branch_protections`, {
+    branch_name: crossBase,
+    enable_status_check: true,
+    status_check_contexts: [
+      'live*',
+      'live/cross?ng',
+      'live[!x]*',
+      'live/{crossing,other}',
+    ],
+  });
+  if (crossRule.status === 201) created.protections.push(crossBase);
+  ok(
+    'provision a protected branch requiring several glob constructs',
+    crossRule.status === 201,
+    `status=${crossRule.status}`,
+  );
+  await probeBranch(crossHead, crossBase);
+  const crossPull = repoCli([
+    'pr',
+    'create',
+    '--head',
+    crossHead,
+    '--base',
+    crossBase,
+    '--title',
+    'live: required contexts in the glob dialect',
+  ]);
+  const crossNumber = crossPull.pull_request.number;
+  created.pulls.push(crossNumber);
+  await seedStatus(crossPull.pull_request.head_sha, 'success', 'live/crossing');
+  const hostMerges = await settle(crossNumber);
+  const crossing = repoCli([
+    'pr',
+    'mergeability',
+    String(crossNumber),
+  ]).mergeability;
+  const crossNote =
+    `forgejo_mergeable=${crossing.forgejo_mergeable} checks_pass=${crossing.checks_pass} ` +
+    `settled=${hostMerges} reasons=${JSON.stringify(crossing.reasons)}`;
+  ok(
+    'the host counts one Check as satisfying every glob construct',
+    hostMerges === true,
+    crossNote,
+  );
+  ok(
+    'required-context matching agrees with the host',
+    crossing.checks_pass === hostMerges,
+    crossNote,
+  );
 
   // ---- label reconcile, collisions and archived state ----------------------
   const reconcileLabel = 'live-reconcile';
@@ -1369,12 +1435,12 @@ try {
   // A leak here is the one the next run cannot clean up for itself, so it is
   // reported rather than swallowed the way the label teardown is.
   const leaked = [];
-  if (created.protection) {
+  for (const rule of created.protections) {
     const gone = await discard(
       'DELETE',
-      `repos/${REPO}/branch_protections/${created.protection}`,
+      `repos/${REPO}/branch_protections/${rule}`,
     );
-    if (gone.status !== 204) leaked.push(`protection ${created.protection}`);
+    if (gone.status !== 204) leaked.push(`protection ${rule}`);
   }
   for (const branch of created.branches) {
     const gone = await discard('DELETE', `repos/${REPO}/branches/${branch}`);

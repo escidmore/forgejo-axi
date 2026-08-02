@@ -96,6 +96,193 @@ describe('normalized checks', () => {
       passes: true,
     },
     {
+      // Forgejo compiles required contexts with no separator, so `*` crosses
+      // `/`. These cases pin that dialect; before it was matched here, a rule
+      // of `ci*` read missing against a pull request the server would merge.
+      name: 'a star crosses a slash in a required pattern',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci*'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/unit'],
+    },
+    {
+      name: 'a bare star matches a slashed context',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['*'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/unit'],
+    },
+    {
+      name: 'a question mark matches one character and crosses a slash',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci?unit'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/unit'],
+    },
+    {
+      name: 'a question mark does not match two characters',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci?nit'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'a character class selects among contexts',
+      statuses: [
+        { context: 'ci1', status: 'success' },
+        { context: 'ci9', status: 'failure' },
+      ],
+      required: ['ci[0-4]'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci1'],
+    },
+    {
+      name: 'a negated character class excludes a context',
+      statuses: [
+        { context: 'ci1', status: 'failure' },
+        { context: 'ci9', status: 'success' },
+      ],
+      required: ['ci[!0-4]'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci9'],
+    },
+    {
+      name: 'brace alternation matches either branch',
+      statuses: [
+        { context: 'ci/unit', status: 'success' },
+        { context: 'ci/lint', status: 'success' },
+        { context: 'ci/e2e', status: 'failure' },
+      ],
+      required: ['ci/{unit,lint}'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/lint', 'ci/unit'],
+    },
+    {
+      name: 'a backslash escapes a wildcard into a literal',
+      statuses: [
+        { context: 'ci*', status: 'success' },
+        { context: 'ci/unit', status: 'failure' },
+      ],
+      required: ['ci\\*'],
+      state: 'failure',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci*'],
+    },
+    {
+      // A leading dot is ordinary here. minimatch hid these behind its `dot`
+      // option, so a rule of `*` used to skip a Check named `.drone`.
+      name: 'a star matches a context that begins with a dot',
+      statuses: [{ context: '.drone/build', status: 'success' }],
+      required: ['*'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['.drone/build'],
+    },
+    {
+      // Forgejo logs and drops a pattern gobwas rejects, so it cannot block a
+      // merge there. Here it matches nothing and reads missing, which blocks —
+      // the fail-closed direction, and it surfaces the broken rule.
+      name: 'a malformed pattern matches nothing rather than everything',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci[0-4'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'an unbalanced brace matches nothing',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci{a,b'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'a trailing backslash matches nothing',
+      statuses: [{ context: 'ci/unit', status: 'success' }],
+      required: ['ci\\'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      // Neither side rejects this one: gobwas builds a range nothing satisfies,
+      // so the rule stays and goes unmatched. Reading it as a range that cannot
+      // be met is the agreeing answer, not the fail-closed one.
+      name: 'a reversed range is a range nothing satisfies',
+      statuses: [{ context: 'ci1', status: 'success' }],
+      required: ['ci[9-0]'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      // gobwas matches runes, so `?` covers a character outside the basic
+      // plane whole rather than matching half a surrogate pair.
+      name: 'a question mark matches one astral rune',
+      statuses: [{ context: 'ci/\u{1F527}', status: 'success' }],
+      required: ['ci/?'],
+      state: 'success',
+      requiredState: 'success',
+      passes: true,
+      matched: ['ci/\u{1F527}'],
+    },
+    {
+      name: 'two question marks do not match one astral rune',
+      statuses: [{ context: 'ci/\u{1F527}', status: 'success' }],
+      required: ['ci/??'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
+      name: 'brace alternation nests',
+      statuses: [
+        { context: 'ci/e2e', status: 'success' },
+        { context: 'ci/unit', status: 'failure' },
+      ],
+      required: ['ci/{unit,{e2e,lint}}'],
+      state: 'failure',
+      requiredState: 'failure',
+      passes: false,
+      matched: ['ci/e2e', 'ci/unit'],
+    },
+    {
+      // A context names itself, so a pattern with several stars must not cost
+      // one pass per way of splitting the value between them. Translated to a
+      // backtracking expression this pair takes about a minute; the guard is
+      // the test timeout, so a regression here reads as a hang, not a wrong
+      // answer.
+      name: 'many stars against a long context stay cheap',
+      statuses: [{ context: 'a'.repeat(60), status: 'success' }],
+      required: ['*a*a*a*a*a*a*a*a*a*a*x'],
+      state: 'success',
+      requiredState: 'missing',
+      passes: false,
+      matched: [],
+    },
+    {
       name: 'required glob folds several matches to the worst failing state',
       statuses: [
         { context: 'ci/unit', status: 'success' },
@@ -120,7 +307,7 @@ describe('normalized checks', () => {
       matched: ['ci/lint', 'ci/unit'],
     },
     {
-      name: 'treats leading bang as a literal, not minimatch negation',
+      name: 'treats a leading bang as a literal, not a negation',
       statuses: [{ context: 'other', status: 'success' }],
       required: ['!ci'],
       state: 'success',
