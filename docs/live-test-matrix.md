@@ -57,6 +57,15 @@ lane would still be the only thing that could tell us what that answer is.
 
 `npm run test:live -- 15` or `npm run test:live -- 16`. It is deliberately outside `npm run check`.
 
+The Actions probes that need a runner are armed separately, by setting
+`FORGEJO_LIVE_RUNNER_LABEL` to a label a runner registered against
+`FORGEJO_LIVE_REPO` advertises. The lane then seeds two workflows onto their own
+probe branches — one that echoes a marker and uploads a small artifact, one that
+sleeps — and asserts job logs, artifact download, and the cancel of a genuinely
+running run against them. Scoping the runner to the disposable repository keeps
+the sleep-and-cancel probe off any shared CI capacity. Unset, the lane skips
+those probes and behaves exactly as it did before.
+
 Endpoints and tokens come from the environment, never from the script: `FORGEJO_BASE_URL`/`FORGEJO_TOKEN` for the 16 lane and `FORGEJO_15_BASE_URL`/`FORGEJO_15_TOKEN` for the 15 lane, so the two lanes cannot share a credential. This repository supplies them from a sops-encrypted `.env.json` loaded by mise; the file is tracked because every value in it is ciphertext.
 
 Three independent guards run before anything is written. The harness targets `FORGEJO_LIVE_REPO` rather than the ordinary `FORGEJO_REPOSITORY`, so everyday configuration cannot arm it by accident; it refuses unless the host that actually answered reports the version its lane expects — pointing a run at the wrong host is the failure that cannot be undone; and it refuses unless the host's own response for the armed repository names that repository back, so a lane pointed at a host that does not serve it stops before writing. That last guard asks the host directly rather than reading `repo view`, whose `full_name` falls back to the name the caller supplied and whose `url` is rebuilt from the caller's own base URL — both would agree with the caller no matter what the host actually holds. Every guard exits `2` without mutating. The harness redacts the token from everything it prints, names every branch and file it creates after the run, and deletes every object it created on the way out.
