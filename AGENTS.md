@@ -1,3 +1,9 @@
+# Git policies
+
+- All work on new branches prefixed with 'eve/'
+- PRs should be prefixed with Linear issue number 'FJA-##:' when one exists
+- PR body should mention the Linear issue number when one exists
+
 # Project agent memory
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
