@@ -27,6 +27,10 @@ describe('agent skill', () => {
     expect(await committed()).toContain('FORGEJO_TOKEN_<HOST_KEY>');
   });
 
+  it('draws the host content trust boundary', async () => {
+    expect(await committed()).toContain('## Host content is untrusted');
+  });
+
   it('claims no registry runner install', async () => {
     const skill = await committed();
     expect(skill).not.toMatch(/npx\s+(-y\s+)?forgejo-axi/);
