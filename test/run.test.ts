@@ -520,7 +520,7 @@ describe('run command family', () => {
   });
 
   // A name the host chooses becomes a filesystem path, so every shape that
-  // could escape the directory is refused before anything is written.
+  // could escape the directory is refused before it becomes one.
   it.each(['../escape', 'nested/child', 'back\\slash', '.', '..', ''])(
     'refuses the server-supplied artifact name %j and writes nothing',
     async (name) => {
@@ -539,15 +539,14 @@ describe('run command family', () => {
         '--dir',
         dir,
       ]);
-      expect(result.exitCode, name).toBe(1);
-      expect(parseJson(result.output), name).toMatchObject({
+      expect(result.exitCode).toBe(1);
+      expect(parseJson(result.output)).toMatchObject({
         code: 'INVALID_RESPONSE',
         details: { name },
       });
-      expect(await readdir(dir), name).toEqual([]);
+      expect(await readdir(dir)).toEqual([]);
       expect(
         server.requests.some((request) => request.url.includes('/zip')),
-        name,
       ).toBe(false);
     },
   );
