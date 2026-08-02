@@ -41,6 +41,8 @@ describe('normalized checks', () => {
     state: ChecksResult['state'];
     requiredState: ChecksResult['required_state'];
     passes: boolean;
+    /** Contexts the first required pattern is expected to have matched. */
+    matched?: string[];
   }> = [
     {
       name: 'empty reports with no requirements',
@@ -94,6 +96,30 @@ describe('normalized checks', () => {
       passes: true,
     },
     {
+      name: 'required glob folds several matches to the worst failing state',
+      statuses: [
+        { context: 'ci/unit', status: 'success' },
+        { context: 'ci/lint', status: 'failure' },
+      ],
+      required: ['ci/*'],
+      state: 'failure',
+      requiredState: 'failure',
+      passes: false,
+      matched: ['ci/lint', 'ci/unit'],
+    },
+    {
+      name: 'required glob folds several matches to the worst pending state',
+      statuses: [
+        { context: 'ci/unit', status: 'success' },
+        { context: 'ci/lint', status: 'pending' },
+      ],
+      required: ['ci/*'],
+      state: 'pending',
+      requiredState: 'pending',
+      passes: false,
+      matched: ['ci/lint', 'ci/unit'],
+    },
+    {
       name: 'treats leading bang as a literal, not minimatch negation',
       statuses: [{ context: 'other', status: 'success' }],
       required: ['!ci'],
@@ -105,7 +131,7 @@ describe('normalized checks', () => {
 
   it.each(cases)(
     '$name',
-    async ({ statuses, required, state, requiredState, passes }) => {
+    async ({ statuses, required, state, requiredState, passes, matched }) => {
       const data = await fixture();
       const server = await startServer((_request, response, recorded) => {
         const path = new URL(recorded.url, 'http://fake').pathname;
@@ -130,6 +156,9 @@ describe('normalized checks', () => {
       expect(checks.state).toBe(state);
       expect(checks.required_state).toBe(requiredState);
       expect(checks.passes).toBe(passes);
+      if (matched) {
+        expect(checks.required.map((item) => item.matched)).toEqual([matched]);
+      }
     },
   );
 
