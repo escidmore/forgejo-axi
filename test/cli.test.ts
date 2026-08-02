@@ -970,4 +970,58 @@ describe('label command family', () => {
     expect(failed.exitCode).toBe(1);
     expect(failed.output).not.toContain('super-secret-token');
   });
+
+  it('pins the encoded bytes for control characters, empty arrays, and # scalars', async () => {
+    const esc = String.fromCharCode(27);
+    const server = await labelServer([
+      {
+        id: 7,
+        name: 'bug',
+        color: 'd73a4a',
+        description: `red${esc}[31m alert`,
+      },
+    ]);
+    const listed = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+    ]);
+    expect(listed.exitCode).toBeUndefined();
+    expect(listed.output).toBe(
+      'labels[1]{id,name,color,description,is_archived,api_url}:\n' +
+        `  7,bug,"#d73a4a","red\\u001b[31m alert",false,"${server.baseUrl}/api/v1/repos/acme/widgets/labels/7"\n` +
+        'page_info:\n' +
+        '  complete: true\n' +
+        '  pages: 1\n' +
+        '  fetched: 1\n' +
+        '  total: 1\n' +
+        '  displayed: 1\n' +
+        '  truncated: false\n',
+    );
+    expect(listed.output).not.toContain(esc);
+
+    const empty = await labelServer([]);
+    const none = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      empty.baseUrl,
+    ]);
+    expect(none.exitCode).toBeUndefined();
+    expect(none.output).toBe(
+      'labels: []\n' +
+        'page_info:\n' +
+        '  complete: true\n' +
+        '  pages: 1\n' +
+        '  fetched: 0\n' +
+        '  total: 0\n' +
+        '  displayed: 0\n' +
+        '  truncated: false\n',
+    );
+  });
 });
