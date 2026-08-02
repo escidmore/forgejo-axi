@@ -377,6 +377,26 @@ describe('HTTP security behavior', () => {
     });
   });
 
+  it('redacts percent-encoded and base64 reflections of the token', async () => {
+    const token = 'reflect-"secret\\value';
+    const server = await startServer((_request, response) =>
+      json(response, 200, {
+        value: `query=${encodeURIComponent(token)} log=${Buffer.from(
+          token,
+        ).toString('base64')}`,
+      }),
+    );
+    servers.push(server);
+    const config = await resolveConnection(
+      { baseUrl: server.baseUrl, tokenEnv: 'TOKEN' },
+      { TOKEN: token },
+    );
+    const response = await new ForgejoHttpClient(config).api<{
+      value: string;
+    }>({ path: 'echo' });
+    expect(response.data.value).toBe('query=[REDACTED] log=[REDACTED]');
+  });
+
   it('refuses a body past the transport size ceiling', async () => {
     const server = await startServer((_request, response) => {
       // The client destroys the socket mid-body, so the writes it abandons

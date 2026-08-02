@@ -433,12 +433,30 @@ function parseErrorBody(buffer: Buffer): unknown {
   }
 }
 
+/**
+ * A host that reflects the token rarely reflects it verbatim: a reflected query
+ * string comes back percent-encoded, and job logs carry base64 as a matter of
+ * course. Matching the literal alone would hand those reflections to the agent.
+ *
+ * ponytail: whole-token reflections only. A token split across lines,
+ * case-altered, or base64-encoded as part of a larger blob — where 3-byte
+ * alignment shifts the encoding — still passes. Scrub by entropy instead if a
+ * real host is ever seen doing that.
+ */
 export function redact(
   message: string | null,
   token: string | undefined,
 ): string | null {
   if (!message || !token) return message;
-  return message.replaceAll(token, '[REDACTED]');
+  let redacted = message;
+  for (const form of [
+    token,
+    encodeURIComponent(token),
+    Buffer.from(token).toString('base64'),
+  ]) {
+    redacted = redacted.replaceAll(form, '[REDACTED]');
+  }
+  return redacted;
 }
 
 function redactData(data: unknown, token: string | undefined): unknown {
