@@ -1184,6 +1184,20 @@ function helpText(key: string): string {
   return (FAMILY_HELP[key] ?? HELP[key] ?? TOP_HELP).replace(/\n$/, '');
 }
 
+/**
+ * DEL and the C1 range, which neither encoder escapes. U+009B and U+009D are
+ * CSI and OSC in their 8-bit forms, so a terminal reading Latin-1 would treat
+ * server-controlled text carrying them as a control sequence. Both encoders
+ * escape C0 already, and `\n` and `\t` sit below this range untouched.
+ */
+const RAW_CONTROLS = /[\u007f-\u009f]/g;
+
 function render(output: Record<string, unknown>, json: boolean): string {
-  return json ? JSON.stringify(output) : encode(output);
+  // Structural syntax in both TOON and JSON is printable ASCII, so anything
+  // matching here came from a string value and dropping it leaves the
+  // document well-formed.
+  return (json ? JSON.stringify(output) : encode(output)).replace(
+    RAW_CONTROLS,
+    '',
+  );
 }

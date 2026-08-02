@@ -26,7 +26,9 @@ observed difference reduces to one of four rules.
 | `#`-prefixed scalar quoting           | `#d73a4a`    | `"#d73a4a"`                | every label color, and any title beginning with `#`                           |
 | object-valued row folding             | `- a:` block | tabular header and CSV row | nothing today; latent                                                         |
 
-`DEL` (`0x7f`) and the C1 range (`0x80`–`0x9f`) are emitted raw by both majors.
+`DEL` (`0x7f`) and the C1 range (`0x80`–`0x9f`) are emitted raw by both majors,
+and by `JSON.stringify`, so `render` strips them after encoding rather than
+relying on the encoder.
 
 The three live rules are improvements. Escaping C0 closes the terminal-escape
 half of FJA-17: a server-controlled string can no longer carry a control
@@ -61,4 +63,6 @@ The 4.x escaping is load-bearing for output safety, so a golden test in
 `test/cli.test.ts` pins the encoded bytes rather than leaving them to the next
 `npm update`. `docs/contract.md` states the three live rules, so the
 compatibility authority describes the encoded form and not only the parsed one.
-The residual — raw `DEL` and C1 — is tracked in FJA-17.
+The residual the encoder leaves — raw `DEL` and C1 — is closed in `render`
+rather than by a further dependency bump, which also covers `--json`, where
+`JSON.stringify` escapes C0 but not these.
