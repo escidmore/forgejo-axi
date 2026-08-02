@@ -20,11 +20,7 @@ export interface ApiBranch {
 
 type CheckState = 'none' | 'pending' | 'failure' | 'success';
 type RequiredState =
-  | 'not_required'
-  | 'missing'
-  | 'pending'
-  | 'failure'
-  | 'success';
+  'not_required' | 'missing' | 'pending' | 'failure' | 'success';
 
 interface NormalizedStatus {
   context: string;
