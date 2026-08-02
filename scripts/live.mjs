@@ -910,6 +910,19 @@ try {
       probe.comments.some((comment) => comment.path === `${BRANCH}.txt`),
     `state=${probe?.state} comments=${probe?.comments.length}`,
   );
+  // A real hunk is short enough to survive the ceiling, so the measurement must
+  // report the hunk that came back rather than a cap.
+  const inline = probe?.comments.find(
+    (comment) => comment.path === `${BRANCH}.txt`,
+  );
+  ok(
+    'an untruncated diff hunk reports its own code-point length',
+    typeof inline?.diff_hunk === 'string' &&
+      inline.diff_hunk.length > 0 &&
+      inline.diff_hunk_truncated === false &&
+      inline.diff_hunk_length === [...inline.diff_hunk].length,
+    `length=${inline?.diff_hunk_length} truncated=${inline?.diff_hunk_truncated}`,
+  );
 
   // The expected-head guard must refuse a stale head rather than merge it.
   const raced = repoCli(

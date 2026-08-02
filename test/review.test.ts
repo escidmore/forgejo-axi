@@ -286,7 +286,11 @@ describe('pr reviews', () => {
 
   it('caps a long diff hunk until --full', async () => {
     const fixture = await load<ReviewWorld>(16);
-    const hunk = `@@ -1,1 +1,1 @@\n${'+ context line\n'.repeat(80)}`;
+    // The hunk carries an astral character so these assertions discriminate
+    // code points from UTF-16 units. An ASCII-only hunk makes the two agree,
+    // which would let a UTF-16 implementation pass unnoticed.
+    const hunk = `@@ -1,1 +1,1 @@\n${'+ context 🌈 line\n'.repeat(80)}`;
+    const hunkPoints = [...hunk].length;
     const server = await reviewServer({
       ...fixture,
       reviews: [
@@ -313,13 +317,16 @@ describe('pr reviews', () => {
         },
       ],
     });
-    expect(hunk.length).toBeGreaterThan(500);
+    expect(hunkPoints).toBeGreaterThan(500);
+    expect(hunk.length).toBeGreaterThan(hunkPoints);
     const capped = parseJson<ReviewsOutput>(
       (await invoke(['pr', 'reviews', ...connection(server), '42'])).output,
     );
-    expect(capped.reviews[0]?.comments[0]?.diff_hunk).toHaveLength(500);
+    expect([...(capped.reviews[0]?.comments[0]?.diff_hunk ?? '')]).toHaveLength(
+      500,
+    );
     expect(capped.reviews[0]?.comments[0]?.diff_hunk_truncated).toBe(true);
-    expect(capped.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunk.length);
+    expect(capped.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunkPoints);
 
     const full = parseJson<ReviewsOutput>(
       (await invoke(['pr', 'reviews', ...connection(server), '42', '--full']))
@@ -327,7 +334,7 @@ describe('pr reviews', () => {
     );
     expect(full.reviews[0]?.comments[0]?.diff_hunk).toBe(hunk);
     expect(full.reviews[0]?.comments[0]?.diff_hunk_truncated).toBe(false);
-    expect(full.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunk.length);
+    expect(full.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunkPoints);
   });
 
   it('renders an empty review list per the contract', async () => {
