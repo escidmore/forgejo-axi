@@ -972,13 +972,18 @@ describe('label command family', () => {
   });
 
   it('pins the encoded bytes for control characters, empty arrays, and # scalars', async () => {
-    const esc = String.fromCharCode(27);
+    const esc = String.fromCharCode(0x1b);
+    const del = String.fromCharCode(0x7f);
+    const csi = String.fromCharCode(0x9b);
+    const osc = String.fromCharCode(0x9d);
     const server = await labelServer([
       {
         id: 7,
         name: 'bug',
         color: 'd73a4a',
-        description: `red${esc}[31m alert`,
+        // The encoder escapes ESC but emits DEL and C1 raw, so render()
+        // drops those; the encoded bytes below are the same either way.
+        description: `red${esc}[31m${del}${csi}${osc} alert`,
       },
     ]);
     const listed = await invoke([
@@ -1002,6 +1007,30 @@ describe('label command family', () => {
         '  truncated: false\n',
     );
     expect(listed.output).not.toContain(esc);
+
+    // JSON.stringify escapes C0 but leaves DEL and C1 raw, so this path
+    // depends on the same strip.
+    const asJson = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(asJson.exitCode).toBeUndefined();
+    for (const output of [listed.output, asJson.output]) {
+      expect(output).not.toContain(del);
+      expect(output).not.toContain(csi);
+      expect(output).not.toContain(osc);
+    }
+    // ESC survives as its escape sequence, inert on the wire and a control
+    // character again only once a consumer parses the JSON.
+    expect(
+      (JSON.parse(asJson.output) as { labels: { description: string }[] })
+        .labels[0]?.description,
+    ).toBe(`red${esc}[31m alert`);
 
     const empty = await labelServer([]);
     const none = await invoke([
