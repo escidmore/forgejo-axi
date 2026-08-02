@@ -1191,14 +1191,14 @@ function helpText(key: string): string {
  * server-controlled text carrying them as a control sequence. Both encoders
  * escape C0 already, and `\n` and `\t` sit below this range untouched.
  */
-const RAW_CONTROLS = /[\u007f-\u009f]/g;
+const UNESCAPED_CONTROLS = /[\u007f-\u009f]/g;
 
 function render(output: Record<string, unknown>, json: boolean): string {
   // Structural syntax in both TOON and JSON is printable ASCII, so anything
   // matching here came from a string value and dropping it leaves the
   // document well-formed.
   return (json ? JSON.stringify(output) : encode(output)).replace(
-    RAW_CONTROLS,
+    UNESCAPED_CONTROLS,
     '',
   );
 }
