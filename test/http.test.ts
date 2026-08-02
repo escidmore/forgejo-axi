@@ -251,6 +251,37 @@ describe('HTTP security behavior', () => {
     ).toBe(true);
   });
 
+  it.each([
+    [303, 'GET', ''],
+    [307, 'POST', '{"value":"once"}'],
+    [308, 'POST', '{"value":"once"}'],
+  ] as const)(
+    'follows HTTP %i as %s, replaying the body only where the status keeps it',
+    async (status, method, body) => {
+      const server = await startServer((_request, response, recorded) => {
+        if (recorded.url === '/api/v1/mutate') {
+          response.statusCode = status;
+          response.setHeader('location', '/api/v1/target');
+          response.end();
+          return;
+        }
+        return json(response, 200, { ok: true });
+      });
+      servers.push(server);
+      const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+      const response = await new ForgejoHttpClient(config).api<{
+        ok: boolean;
+      }>({ method: 'POST', path: 'mutate', body: { value: 'once' } });
+      expect(response.data.ok).toBe(true);
+      expect(
+        server.requests.map((request) => [request.method, request.body]),
+      ).toEqual([
+        ['POST', '{"value":"once"}'],
+        [method, body],
+      ]);
+    },
+  );
+
   it.each([301, 302])(
     'rejects ambiguous HTTP %i mutation redirects without replaying the body',
     async (status) => {
@@ -278,6 +309,27 @@ describe('HTTP security behavior', () => {
       expect(server.requests).toHaveLength(1);
     },
   );
+
+  it('stops at the redirect ceiling instead of following a loop', async () => {
+    const server = await startServer((_request, response) => {
+      response.statusCode = 302;
+      response.setHeader('location', '/api/v1/loop');
+      response.end();
+    });
+    servers.push(server);
+    const config = await resolveConnection({ baseUrl: server.baseUrl }, {});
+    await expect(
+      new ForgejoHttpClient(config).api({ path: 'version' }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REDIRECT',
+      // The shared code also covers a missing Location and a credentialed
+      // target, so the message is what pins this to the ceiling.
+      message: 'Too many redirects',
+    });
+    // The first request plus MAX_REDIRECTS hops; the redirect answering the
+    // last of those is refused rather than followed.
+    expect(server.requests).toHaveLength(6);
+  });
 
   it('rejects cross-origin redirects before credentials reach the target', async () => {
     const target = await startServer((_request, response) =>
