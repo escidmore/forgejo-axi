@@ -44,9 +44,14 @@ function artifactZip(id: number): Buffer {
   return Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, id]);
 }
 
-/** Carries a secret so redaction is provable when a token is configured. */
+/**
+ * Carries the secret twice — verbatim, and base64 as CI output routinely
+ * reflects it — so redaction is provable for both when a token is configured.
+ * The encoding is spelled out so it stands in for a host's wire form rather
+ * than re-deriving whatever the client happens to encode.
+ */
 function jobLog(id: number): string {
-  return `job ${id} log token=super-secret-token`;
+  return `job ${id} log token=super-secret-token b64=c3VwZXItc2VjcmV0LXRva2Vu`;
 }
 
 async function runServer(world: RunWorld): Promise<FakeServer> {
@@ -349,10 +354,11 @@ describe('run command family', () => {
     expect(result.exitCode).toBeUndefined();
     const viewed = parseJson<{ jobs: Array<{ log?: string }> }>(result.output);
     expect(viewed.jobs.map((job) => job.log)).toEqual([
-      'job 21 log token=[REDACTED]',
-      'job 22 log token=[REDACTED]',
+      'job 21 log token=[REDACTED] b64=[REDACTED]',
+      'job 22 log token=[REDACTED] b64=[REDACTED]',
     ]);
     expect(result.output).not.toContain('super-secret-token');
+    expect(result.output).not.toContain('c3VwZXItc2VjcmV0LXRva2Vu');
   });
 
   it('surfaces the server message when a raw log fetch fails', async () => {
