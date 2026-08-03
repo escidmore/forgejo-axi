@@ -112,13 +112,6 @@ export async function main(options: MainOptions = {}): Promise<void> {
       label: command(runLabel),
       issue: command(runIssue),
       run: command(runRun),
-      // Shadowing the SDK built-in keeps `update` an unknown command until
-      // the package is actually published.
-      update: () => {
-        throw usageError('Unknown command: update', [
-          'Run `forgejo-axi --help`',
-        ]);
-      },
     },
     getCommandHelp: (name) => COMMAND_HELP[name],
     renderUnknownCommand: (name) =>
