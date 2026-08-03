@@ -6,7 +6,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) as scoped by
 [`docs/contract.md`](docs/contract.md): command names, field meanings, enum
 values, and exit semantics change only in a major release.
 
-## [1.0.0] - 2026-08-01
+## [1.0.0] - 2026-08-03
 
 First public release.
 
