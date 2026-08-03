@@ -37,6 +37,21 @@ export async function resolveConnection(
   }
   const source = input.baseUrl ? 'flag' : 'env';
   const baseUrl = canonicalizeBaseUrl(rawBase);
+  // Every answer an agent acts on — merge proofs, check states, mergeability —
+  // is forgeable on a plaintext hop whether or not there is a credential to
+  // steal, so the transport is refused rather than the credential alone.
+  if (baseUrl.protocol === 'http:' && !isLoopbackHostname(baseUrl.hostname)) {
+    throw new ForgejoAxiError(
+      'Refusing to reach a non-loopback host over plaintext HTTP',
+      'INSECURE_TRANSPORT',
+      {
+        suggestions: [
+          'Use an https:// base URL, adding --ca-file PATH when the host presents a private CA certificate',
+          'Forward the host to loopback (ssh -L) when it cannot serve TLS',
+        ],
+      },
+    );
+  }
   const timeoutMs = positiveInteger(
     input.timeoutMs ?? env['FORGEJO_TIMEOUT_MS'] ?? String(DEFAULT_TIMEOUT_MS),
     '--timeout-ms',
@@ -55,16 +70,6 @@ export async function resolveConnection(
   }
 
   const tokenResolution = resolveToken(baseUrl, source, input.tokenEnv, env);
-  if (
-    tokenResolution.token &&
-    baseUrl.protocol === 'http:' &&
-    !isLoopbackHostname(baseUrl.hostname)
-  ) {
-    throw new ForgejoAxiError(
-      'Refusing to send authentication over HTTP to a non-loopback host',
-      'INSECURE_AUTH',
-    );
-  }
 
   const config: ConnectionConfig = {
     baseUrl,

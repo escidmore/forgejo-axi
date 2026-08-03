@@ -86,8 +86,9 @@ hosts cannot share a credential.
   rather than a silent anonymous request.
 - Pass the variable's name, never its value. Do not write a token into a command
   line, a file in the repository, a commit, or any output you relay.
-- Credentialed HTTP is accepted only for loopback hosts, and redirects must stay
-  same-origin.
+- Plaintext HTTP is accepted only for loopback hosts, with or without a token,
+  and redirects must stay same-origin. A non-loopback `http://` base URL is
+  refused with `INSECURE_TRANSPORT` before any request.
 
 ## Output and exits
 

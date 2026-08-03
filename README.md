@@ -93,7 +93,7 @@ forgejo-axi api PATCH repos/owner/repo/pulls/42 --data '{"title":"New title"}'
 
 `status` probes the runtime Swagger document rather than inferring features from the version. Forgejo 15.0.5 is supported and reports Actions job logs unavailable; Forgejo 16.x reports them only when the route is actually advertised. Unavailable logs are never treated as failed commit-status gating.
 
-Self-hosted URLs may contain ports and path prefixes. Credentialed HTTP is restricted to loopback, redirects must remain same-origin, and credentials, query strings, fragments, encoded separators, and dot segments are rejected in base URLs.
+Self-hosted URLs may contain ports and path prefixes. Plaintext HTTP is restricted to loopback whether or not a token is configured, redirects must remain same-origin, and credentials, query strings, fragments, encoded separators, and dot segments are rejected in base URLs.
 
 See [`docs/contract.md`](docs/contract.md) for the machine-output compatibility contract and run `forgejo-axi --help` for the complete command surface.
 
