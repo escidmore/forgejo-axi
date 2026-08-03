@@ -1,7 +1,6 @@
 {
   "name": "forgejo-axi",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
   "description": "Agent-facing CLI boundary for Forgejo pull request lifecycles",
   "keywords": [
     "axi",
@@ -10,6 +9,8 @@
   ],
   "homepage": "https://github.com/escidmore/forgejo-axi#readme",
   "bugs": "https://github.com/escidmore/forgejo-axi/issues",
+  "license": "MIT",
+  "author": "Evelyn Scidmore",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/escidmore/forgejo-axi.git"
@@ -20,10 +21,10 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.js.map",
     "skills",
     "README.md",
-    "docs",
-    "AGENTS.md"
+    "docs/contract.md"
   ],
   "engines": {
     "node": ">=20"

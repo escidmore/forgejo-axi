@@ -8,13 +8,15 @@ const packageJson = async (): Promise<Record<string, unknown>> =>
   JSON.parse(await readFile(new URL('package.json', ROOT), 'utf8'));
 
 describe('repository', () => {
-  it('stays private, so nothing can be published by accident', async () => {
-    expect((await packageJson())['private']).toBe(true);
+  it('is publishable, so a release cannot be blocked by a stray private flag', async () => {
+    expect((await packageJson())['private']).not.toBe(true);
   });
 
-  it('carries no license until one is chosen deliberately', async () => {
-    expect(await packageJson()).not.toHaveProperty('license');
+  it('declares MIT and ships the license text under a name npm includes', async () => {
+    expect((await packageJson())['license']).toBe('MIT');
     const entries = await readdir(fileURLToPath(ROOT));
-    expect(entries.filter((name) => /^licen[cs]e/i.test(name))).toEqual([]);
+    expect(entries.filter((name) => /^licen[cs]e/i.test(name))).toEqual([
+      'LICENSE',
+    ]);
   });
 });

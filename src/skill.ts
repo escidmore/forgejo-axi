@@ -41,16 +41,11 @@ whether what the host returned can be trusted.
 
 ## Install
 
-The CLI is not published to any registry, so no registry runner can fetch it.
-Installing this skill installs guidance only, not the CLI runtime. Install the
-runtime from a source checkout, which needs Node.js 20 or newer:
+Installing this skill installs guidance only, not the CLI runtime. The runtime
+is published to npm as \`forgejo-axi\` and needs Node.js 20 or newer:
 
 \`\`\`console
-git clone https://github.com/escidmore/forgejo-axi
-cd forgejo-axi
-npm ci
-npm run build
-npm link
+npm install -g forgejo-axi
 \`\`\`
 
 Confirm the binary answers before relying on it:
