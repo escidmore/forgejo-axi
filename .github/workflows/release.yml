@@ -51,6 +51,9 @@ jobs:
       # with a token. Once forgejo-axi exists on the registry, configure the
       # trusted publisher on npmjs.com, delete the secret, and remove this env
       # block: OIDC then authenticates the publish with no long-lived credential.
-      - run: npm publish --provenance
+      #
+      # --access public is explicit because provenance refuses to guess for a
+      # package the registry has never seen.
+      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
