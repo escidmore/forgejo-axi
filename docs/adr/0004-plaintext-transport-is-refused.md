@@ -40,12 +40,23 @@ needs no credential to forge a response. Two of the three forgeries FJA-20 names
 — passing required checks, and `merged: true` — reach the agent through reads,
 so refusing mutations alone would have left most of the stated threat reachable.
 
+**Refuse only the commands that can emit a proof, and keep the rest.** Rejected,
+though it is the strongest of the alternatives: it closes the stated threat and
+preserves `status`, `repo list`, and similar reads that carry no proof. It fails
+on `api`, which forwards an arbitrary method and path — `api GET
+repos/owner/repo/pulls/1` returns `mergeable` and `merged` verbatim, so the
+proof-bearing set is not a property of the command name and cannot be decided
+from it. Refusing `api` wholesale to close that gap gives up most of what the
+option was preserving. What remains is a classification that must be re-derived
+correctly for every command added later, and whose failure mode is silent: a
+command misfiled as proof-free serves a forged answer with no error.
+
 **Refuse the connection.** Accepted. Over non-loopback plaintext no command is
 trustworthy, so there is no safe subset to carve out, and the axis is
 trusted-transport versus not rather than read versus mutate. Dropping the
-`tokenResolution.token &&` condition is also smaller than either offered option:
-no new field, no schema addition, and no per-command classification of what
-counts as a merge proof to keep correct as that surface grows.
+`tokenResolution.token &&` condition is also the smallest of the four: one
+deleted condition, no new field, no schema addition, and nothing to keep correct
+as the command surface grows.
 
 ## Consequences
 
