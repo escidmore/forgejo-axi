@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -518,6 +518,38 @@ describe('run command family', () => {
     ]);
     await expect(readFile(join(dir, 'coverage.zip'))).rejects.toThrow();
   });
+
+  // A name the host chooses becomes a filesystem path, so every shape that
+  // could escape the directory is refused before it becomes one.
+  it.each(['../escape', 'nested/child', 'back\\slash', '.', '..', ''])(
+    'refuses the server-supplied artifact name %j and writes nothing',
+    async (name) => {
+      const world = await load<RunWorld>(16);
+      const server = await runServer({
+        ...world,
+        artifacts: [{ id: 31, name, size_in_bytes: 1024 }],
+      });
+      const dir = await tempDir();
+
+      const result = await invoke([
+        'run',
+        'download',
+        ...connection(server),
+        '9',
+        '--dir',
+        dir,
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(parseJson(result.output)).toMatchObject({
+        code: 'INVALID_RESPONSE',
+        details: { name },
+      });
+      expect(await readdir(dir)).toEqual([]);
+      expect(
+        server.requests.some((request) => request.url.includes('/zip')),
+      ).toBe(false);
+    },
+  );
 
   it('rejects invalid invocations with exit code 2 and a usage hint', async () => {
     const cases: Array<[string[], string]> = [
