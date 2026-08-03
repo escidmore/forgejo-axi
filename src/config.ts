@@ -46,8 +46,7 @@ export async function resolveConnection(
       'INSECURE_TRANSPORT',
       {
         suggestions: [
-          'Use an https:// base URL',
-          'Pass --ca-file PATH when the host presents a private CA certificate',
+          'Use an https:// base URL, adding --ca-file PATH when the host presents a private CA certificate',
           'Forward the host to loopback (ssh -L) when it cannot serve TLS',
         ],
       },
