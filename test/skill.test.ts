@@ -27,9 +27,9 @@ describe('agent skill', () => {
     expect(await committed()).toContain('FORGEJO_TOKEN_<HOST_KEY>');
   });
 
-  it('claims no registry runner install', async () => {
+  it('installs the published package, not a source checkout', async () => {
     const skill = await committed();
-    expect(skill).not.toMatch(/npx\s+(-y\s+)?forgejo-axi/);
-    expect(skill).toContain('npm link');
+    expect(skill).toContain('npm install -g forgejo-axi');
+    expect(skill).not.toContain('npm link');
   });
 });
