@@ -27,9 +27,11 @@ jobs:
       # Deliberately uncached. The npm cache is writable by every other workflow
       # run, so a poisoned entry restored here would reach the published tarball.
       # A release runs once; a cold install is worth more than the seconds saved.
+      # Node 24 because trusted publishing needs npm 11.5.1 or newer, and
+      # Node 22 bundles npm 10.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 24
           package-manager-cache: false
           registry-url: https://registry.npmjs.org
       - run: npm ci
@@ -46,14 +48,8 @@ jobs:
           fi
       # prepublishOnly runs npm run check, which builds dist/ before packing.
       #
-      # NPM_TOKEN is temporary. npm cannot register a trusted publisher for a
-      # package that does not exist yet, so the first release has to authenticate
-      # with a token. Once forgejo-axi exists on the registry, configure the
-      # trusted publisher on npmjs.com, delete the secret, and remove this env
-      # block: OIDC then authenticates the publish with no long-lived credential.
-      #
-      # --access public is explicit because provenance refuses to guess for a
-      # package the registry has never seen.
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Authentication is the trusted publisher configured on npmjs.com for
+      # this repository and workflow file: OIDC, no long-lived credential.
+      # Provenance is attached automatically under trusted publishing, so no
+      # --provenance flag, and the package already exists so no --access flag.
+      - run: npm publish

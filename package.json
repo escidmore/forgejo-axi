@@ -17,7 +17,7 @@
   },
   "type": "module",
   "bin": {
-    "forgejo-axi": "./dist/bin/forgejo-axi.js"
+    "forgejo-axi": "dist/bin/forgejo-axi.js"
   },
   "files": [
     "dist",
