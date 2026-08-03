@@ -98,13 +98,16 @@ describe('URL and authentication configuration', () => {
     }
   });
 
-  it('rejects authenticated non-loopback HTTP', async () => {
+  it('rejects non-loopback HTTP with or without a token', async () => {
     await expect(
       resolveConnection(
         { baseUrl: 'http://forgejo.example', tokenEnv: 'TOKEN' },
         { TOKEN: 'secret' },
       ),
-    ).rejects.toMatchObject({ code: 'INSECURE_AUTH' });
+    ).rejects.toMatchObject({ code: 'INSECURE_TRANSPORT' });
+    await expect(
+      resolveConnection({ baseUrl: 'http://forgejo.example' }, {}),
+    ).rejects.toMatchObject({ code: 'INSECURE_TRANSPORT' });
   });
 
   it('accepts authenticated IPv4 and IPv6 loopback HTTP', async () => {
@@ -112,6 +115,14 @@ describe('URL and authentication configuration', () => {
       await expect(
         resolveConnection({ baseUrl, tokenEnv: 'TOKEN' }, { TOKEN: 'secret' }),
       ).resolves.toMatchObject({ token: 'secret' });
+    }
+  });
+
+  it('accepts anonymous loopback HTTP', async () => {
+    for (const baseUrl of ['http://127.0.0.2:3000', 'http://[::1]:3000']) {
+      await expect(resolveConnection({ baseUrl }, {})).resolves.toMatchObject({
+        tokenSource: null,
+      });
     }
   });
 });
