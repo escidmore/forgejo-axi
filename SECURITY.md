@@ -27,9 +27,9 @@ protections most worth reporting against are:
   collide with a look-alike host. A case where one host's token reaches another
   host is a vulnerability.
 - **Base URL and redirect handling.** Credentials, query strings, fragments,
-  encoded separators, and dot segments are rejected in base URLs. Credentialed
-  plain HTTP is restricted to loopback. Redirects are followed only when they
-  stay same-origin. A bypass of any of these is a vulnerability.
+  encoded separators, and dot segments are rejected in base URLs. Plaintext
+  HTTP is restricted to loopback whether or not a token is configured.
+  Redirects are followed only when they stay same-origin. A bypass of any of these is a vulnerability.
 - **Merge safety.** `pr merge` sends Forgejo's atomic `head_commit_id` so a
   merge cannot land on a head the caller did not verify. A path that merges
   without that guarantee is a vulnerability.
