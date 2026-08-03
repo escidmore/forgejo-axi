@@ -95,7 +95,7 @@ export function canonicalizeBaseUrl(raw: string): URL {
   try {
     url = new URL(raw);
   } catch {
-    throw usageError(`Invalid base URL: ${raw}`);
+    throw usageError('Base URL is not a valid absolute URL');
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw usageError('Base URL must use http or https');

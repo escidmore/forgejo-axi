@@ -63,6 +63,14 @@ describe('URL and authentication configuration', () => {
     expect(() => canonicalizeBaseUrl(value)).toThrow();
   });
 
+  it('does not echo an unparseable base URL back in the error', () => {
+    // A credential-bearing typo never reaches the credential guard, because the
+    // parse fails first — so the parse error is what must stay generic.
+    expect(() =>
+      canonicalizeBaseUrl('https://user:s3cret@exa mple.test'),
+    ).toThrow(/^Base URL is not a valid absolute URL$/);
+  });
+
   it('uses host-scoped tokens and does not use generic tokens for flag URLs', async () => {
     const scoped = await resolveConnection(
       { baseUrl: 'https://forgejo.example:8443' },
