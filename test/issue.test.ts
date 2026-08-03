@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
+  connection,
   invoke,
   json,
-  loadFixture as load,
+  loadFixture,
   parseJson,
   servers,
   startServer,
@@ -27,12 +28,8 @@ interface IssueWorld {
 
 afterEach(closeServers);
 
-async function loadFixture(version: 15 | 16): Promise<Fixture> {
-  return load<Fixture>(version);
-}
-
 async function worldFor(version: 15 | 16): Promise<IssueWorld> {
-  const fixture = await loadFixture(version);
+  const fixture = await loadFixture<Fixture>(version);
   return {
     issue: fixture.issue,
     comments: fixture.comments,
@@ -128,16 +125,6 @@ async function issueServer(world: IssueWorld): Promise<FakeServer> {
   });
   servers.push(server);
   return server;
-}
-
-function connection(server: FakeServer, json = true): string[] {
-  return [
-    '--repo',
-    'acme/widgets',
-    '--base-url',
-    server.baseUrl,
-    ...(json ? ['--json'] : []),
-  ];
 }
 
 describe('issue command family', () => {

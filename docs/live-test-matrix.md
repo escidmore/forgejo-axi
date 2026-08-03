@@ -42,15 +42,45 @@ That last one has a limit worth recording. Forgejo's duplicate check is a read f
 
 Each lane runs the whole issue family; `label` create, list, edit, and delete; `repo view`; `api --paginate` across a genuine page boundary; `pr` create, list, find, view, update, checks, mergeability, merge, merged, reviews, and diff; and runner-free `run` probes. The review probe submits the one verdict Forgejo lets an author record on their own pull request — a `COMMENT` review carrying an inline comment — and then asserts the reviewer, the verdict, and the file anchor come back through `pr reviews`. On a host advertising the runs capability, `run list` must decode Forgejo's real `{workflow_runs}` envelope and have its `--status` and `--branch` filters accepted, and a missing run must map to `NOT_FOUND`; on a host without the route, the family must report itself unsupported from the probe.
 
-Each lane also provisions a protected base branch with a required status context and takes it down again, driving that context through missing, pending, failing, and passing to prove `checks.required`, `required_state`, and `protection` against real branch protection. It merges one pull request per method, so `merge` and `rebase` are proven behind an expected head alongside `squash`. It exercises reconcile in both families — `pr create` and `label create` against an already-desired state are exit `0` and mutation-free, a differing title or colour reconciles onto the existing record, `label edit` renaming onto a name the repository carries returns `LABEL_EXISTS`, an ambiguous name returns `LABEL_AMBIGUOUS` with both ids, and editing an archived label leaves it archived. Finally it drives `api` through `POST`, `PATCH`, and `DELETE` with `--data`, including the refusal to combine `--data` with `--paginate`.
+Each lane also provisions a protected base branch with a required status context and takes it down again, driving that context through missing, pending, failing, and passing to prove `checks.required`, `required_state`, and `protection` against real branch protection. A second protected branch requires four patterns — `live*`, `live/cross?ng`, `live[!x]*` and `live/{crossing,other}` — against a single Check named `live/crossing`, covering a star and a `?` that each have to cross a `/`, a class, and brace alternation. Forgejo settles that pull request from its own copy of those rules, and the lane asserts the CLI's `checks_pass` equals the host's verdict rather than naming either, so it holds whichever way the two move; a separate assertion pins what the host decided, without which two systems that both refused would agree and prove nothing. Escapes and astral runes stay in the unit table, since a Check named `live*` is not worth provisioning against a real host. It merges one pull request per method, so `merge` and `rebase` are proven behind an expected head alongside `squash`. It exercises reconcile in both families — `pr create` and `label create` against an already-desired state are exit `0` and mutation-free, a differing title or colour reconciles onto the existing record, `label edit` renaming onto a name the repository carries returns `LABEL_EXISTS`, an ambiguous name returns `LABEL_AMBIGUOUS` with both ids, and editing an archived label leaves it archived. Finally it drives `api` through `POST`, `PATCH`, and `DELETE` with `--data`, including the refusal to combine `--data` with `--paginate`.
 
 Two of those exist only because a real server behaves unlike a fake one. Pagination is walked against 55 seeded labels, so the shared helper is proven to cross a page boundary without dropping a row — worth asserting because one Forgejo endpoint is already known to ignore `page` and `limit` entirely. And Forgejo computes mergeability in the background, answering `405 please try again later` until it settles, so the lane waits for the server rather than racing it. Checks are aggregated from a commit status seeded through the statuses API, which also pins down that an empty status set reads as `none` rather than as a failure.
 
-Not yet covered live, each needing more than a disposable repository: Actions runs with real content — job logs, cancel, and artifact download — which need a runner and a real workflow run; Actions run list, view, cancel, and download on 16, which needs the same runner and a run that produces an artifact; the `CONFLICT` race-recovery branch in `pr create`, which needs a competing create landed inside one invocation's pre-check-to-`POST` window; reviews from a second account, so the `APPROVED` and `REQUEST_CHANGES` verdicts and the stale and dismissed flags stay fixture-only; and transport behaviour — path prefixes, redirects, and CA files, which the CI workflow wires up for a host behind a private CA but which no run has yet exercised.
+Not yet covered live, each needing more than a disposable repository: the `CONFLICT` race-recovery branch in `pr create`, which needs a competing create landed inside one invocation's pre-check-to-`POST` window; reviews from a second account, so the `APPROVED` and `REQUEST_CHANGES` verdicts and the stale and dismissed flags stay fixture-only; and transport behaviour — path prefixes, redirects, and CA files, which the CI workflow wires up for a host behind a private CA but which no run has yet exercised.
+
+Artifact upload is the one step that reaches the host from inside the job
+container rather than from the runner, so it is the first thing to break when
+the workflow network cannot resolve the instance. On a runner whose temporary
+`WORKFLOW-*` network has broken DNS it fails as a `CreateArtifact` request
+timeout after five retries — which reads like a slow host rather than the
+`EAI_AGAIN` it is — and pinning the runner to a real container network fixes it.
+That is why the upload has a workflow of its own: folded into the marker
+workflow, a runner network fault would present as broken job logs and a failed
+run instead.
+
+The cancel gap this lane was going to have to close is closed. A real 16.0.1
+answers a redundant cancel of a finished run with `204`, so the unconditional
+`POST` the CLI used to send was safe on this host. `run cancel` no longer sends
+it — the early return makes the contracted no-op hold by construction rather
+than by that answer staying `204` — but the race between the pre-check and the
+`POST` is cosmetic on a host that behaves this way, not a live defect.
 
 ## Running a lane
 
 `npm run test:live -- 15` or `npm run test:live -- 16`. It is deliberately outside `npm run check`.
+
+The Actions probes that need a runner are armed separately, by setting
+`FORGEJO_LIVE_RUNNER_LABEL` to a label a runner registered against
+`FORGEJO_LIVE_REPO` advertises. The lane then seeds three workflows onto their
+own probe branches — one that echoes a marker, one that uploads a small
+artifact, one that sleeps — and asserts job logs, artifact download, and the
+cancel of a genuinely running run against them. The marker and the artifact are
+separate workflows on purpose: upload is the step that needs the host reachable
+from the workflow network, and folding it into the first would let a runner
+network problem masquerade as broken job logs. Scoping the runner to the
+disposable repository keeps the sleep-and-cancel probe off any shared CI
+capacity. Unset, the lane skips those probes and behaves exactly as it did
+before.
 
 Endpoints and tokens come from the environment, never from the script: `FORGEJO_BASE_URL`/`FORGEJO_TOKEN` for the 16 lane and `FORGEJO_15_BASE_URL`/`FORGEJO_15_TOKEN` for the 15 lane, so the two lanes cannot share a credential. This repository supplies them from a sops-encrypted `.env.json` loaded by mise; the file is tracked because every value in it is ciphertext.
 

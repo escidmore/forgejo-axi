@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
+  connection,
   invoke,
   json,
   loadFixture as load,
@@ -43,9 +44,14 @@ function artifactZip(id: number): Buffer {
   return Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xff, id]);
 }
 
-/** Carries a secret so redaction is provable when a token is configured. */
+/**
+ * Carries the secret twice — verbatim, and base64 as CI output routinely
+ * reflects it — so redaction is provable for both when a token is configured.
+ * The encoding is spelled out so it stands in for a host's wire form rather
+ * than re-deriving whatever the client happens to encode.
+ */
 function jobLog(id: number): string {
-  return `job ${id} log token=super-secret-token`;
+  return `job ${id} log token=super-secret-token b64=c3VwZXItc2VjcmV0LXRva2Vu`;
 }
 
 async function runServer(world: RunWorld): Promise<FakeServer> {
@@ -137,16 +143,6 @@ async function unsupportedServer(): Promise<FakeServer> {
   });
   servers.push(server);
   return server;
-}
-
-function connection(server: FakeServer, json = true): string[] {
-  return [
-    '--repo',
-    'acme/widgets',
-    '--base-url',
-    server.baseUrl,
-    ...(json ? ['--json'] : []),
-  ];
 }
 
 describe('run command family', () => {
@@ -358,10 +354,11 @@ describe('run command family', () => {
     expect(result.exitCode).toBeUndefined();
     const viewed = parseJson<{ jobs: Array<{ log?: string }> }>(result.output);
     expect(viewed.jobs.map((job) => job.log)).toEqual([
-      'job 21 log token=[REDACTED]',
-      'job 22 log token=[REDACTED]',
+      'job 21 log token=[REDACTED] b64=[REDACTED]',
+      'job 22 log token=[REDACTED] b64=[REDACTED]',
     ]);
     expect(result.output).not.toContain('super-secret-token');
+    expect(result.output).not.toContain('c3VwZXItc2VjcmV0LXRva2Vu');
   });
 
   it('surfaces the server message when a raw log fetch fails', async () => {
@@ -435,6 +432,42 @@ describe('run command family', () => {
       cancelled: false,
       run: { id: 9, status: 'cancelled' },
     });
+    expect(
+      server.requests.filter((request) => request.url.includes('/cancel')),
+    ).toHaveLength(1);
+  });
+
+  it('leaves a finished run alone even when the host would reject the cancel', async () => {
+    const world = await load<RunWorld>(16);
+    // Every terminal status, so dropping one from DONE_RUN_STATUSES fails here.
+    for (const status of ['success', 'failure', 'cancelled', 'skipped']) {
+      const server = await startServer((_request, response, recorded) => {
+        const url = new URL(recorded.url, 'http://fake');
+        if (url.pathname === '/swagger.v1.json')
+          return json(response, 200, world.swagger);
+        const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
+        if (path === '/actions/runs/9')
+          return json(response, 200, { ...world.run, status });
+        return json(response, 409, { message: 'run is already done' });
+      });
+      servers.push(server);
+
+      const result = await invoke([
+        'run',
+        'cancel',
+        ...connection(server),
+        '9',
+      ]);
+      expect(result.exitCode, status).toBeUndefined();
+      expect(parseJson(result.output), status).toMatchObject({
+        cancelled: false,
+        run: { id: 9, status },
+      });
+      expect(
+        server.requests.filter((request) => request.url.includes('/cancel')),
+        status,
+      ).toHaveLength(0);
+    }
   });
 
   it('downloads artifacts into a created directory and never overwrites one', async () => {
@@ -491,6 +524,38 @@ describe('run command family', () => {
     ]);
     await expect(readFile(join(dir, 'coverage.zip'))).rejects.toThrow();
   });
+
+  // A name the host chooses becomes a filesystem path, so every shape that
+  // could escape the directory is refused before it becomes one.
+  it.each(['../escape', 'nested/child', 'back\\slash', '.', '..', ''])(
+    'refuses the server-supplied artifact name %j and writes nothing',
+    async (name) => {
+      const world = await load<RunWorld>(16);
+      const server = await runServer({
+        ...world,
+        artifacts: [{ id: 31, name, size_in_bytes: 1024 }],
+      });
+      const dir = await tempDir();
+
+      const result = await invoke([
+        'run',
+        'download',
+        ...connection(server),
+        '9',
+        '--dir',
+        dir,
+      ]);
+      expect(result.exitCode).toBe(1);
+      expect(parseJson(result.output)).toMatchObject({
+        code: 'INVALID_RESPONSE',
+        details: { name },
+      });
+      expect(await readdir(dir)).toEqual([]);
+      expect(
+        server.requests.some((request) => request.url.includes('/zip')),
+      ).toBe(false);
+    },
+  );
 
   it('rejects invalid invocations with exit code 2 and a usage hint', async () => {
     const cases: Array<[string[], string]> = [

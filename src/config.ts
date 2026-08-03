@@ -4,10 +4,10 @@ import { positiveInteger } from './args.js';
 import { usageError, ForgejoAxiError } from './errors.js';
 
 export interface ConnectionInput {
-  baseUrl?: string;
-  tokenEnv?: string;
-  timeoutMs?: string;
-  caFile?: string;
+  baseUrl?: string | undefined;
+  tokenEnv?: string | undefined;
+  timeoutMs?: string | undefined;
+  caFile?: string | undefined;
 }
 
 export interface ConnectionConfig {
@@ -22,7 +22,6 @@ export interface ConnectionConfig {
 
 const ENCODED_PATH_HAZARD = /%(?:2e|2f|5c)/i;
 const TRUSTED_ENCODED_PATH_HAZARD = /%(?:2e|5c)/i;
-const ALPHANUMERIC = /^[A-Z0-9]$/;
 const DEFAULT_TIMEOUT_MS = 15_000;
 
 export async function resolveConnection(
@@ -38,6 +37,21 @@ export async function resolveConnection(
   }
   const source = input.baseUrl ? 'flag' : 'env';
   const baseUrl = canonicalizeBaseUrl(rawBase);
+  // Every answer an agent acts on — merge proofs, check states, mergeability —
+  // is forgeable on a plaintext hop whether or not there is a credential to
+  // steal, so the transport is refused rather than the credential alone.
+  if (baseUrl.protocol === 'http:' && !isLoopbackHostname(baseUrl.hostname)) {
+    throw new ForgejoAxiError(
+      'Refusing to reach a non-loopback host over plaintext HTTP',
+      'INSECURE_TRANSPORT',
+      {
+        suggestions: [
+          'Use an https:// base URL, adding --ca-file PATH when the host presents a private CA certificate',
+          'Forward the host to loopback (ssh -L) when it cannot serve TLS',
+        ],
+      },
+    );
+  }
   const timeoutMs = positiveInteger(
     input.timeoutMs ?? env['FORGEJO_TIMEOUT_MS'] ?? String(DEFAULT_TIMEOUT_MS),
     '--timeout-ms',
@@ -56,16 +70,6 @@ export async function resolveConnection(
   }
 
   const tokenResolution = resolveToken(baseUrl, source, input.tokenEnv, env);
-  if (
-    tokenResolution.token &&
-    baseUrl.protocol === 'http:' &&
-    !isLoopbackHostname(baseUrl.hostname)
-  ) {
-    throw new ForgejoAxiError(
-      'Refusing to send authentication over HTTP to a non-loopback host',
-      'INSECURE_AUTH',
-    );
-  }
 
   const config: ConnectionConfig = {
     baseUrl,
@@ -96,7 +100,7 @@ export function canonicalizeBaseUrl(raw: string): URL {
   try {
     url = new URL(raw);
   } catch {
-    throw usageError(`Invalid base URL: ${raw}`);
+    throw usageError('Base URL is not a valid absolute URL');
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw usageError('Base URL must use http or https');
@@ -106,10 +110,6 @@ export function canonicalizeBaseUrl(raw: string): URL {
   }
   if (url.search || url.hash) {
     throw usageError('Base URL must not contain a query string or fragment');
-  }
-  const segments = url.pathname.split('/');
-  if (segments.some((segment) => segment === '.' || segment === '..')) {
-    throw usageError('Base URL must not contain dot segments');
   }
   url.pathname = `${url.pathname.replace(/\/+$/, '')}/`;
   return url;
@@ -150,13 +150,13 @@ export function appendPath(
 }
 
 export function hostKey(url: URL): string {
-  return [...url.host.toUpperCase()]
-    .map((character) =>
-      ALPHANUMERIC.test(character)
-        ? character
-        : `_${character.codePointAt(0)?.toString(16).toUpperCase()}_`,
-    )
-    .join('');
+  return url.host
+    .toUpperCase()
+    .replace(
+      /[^A-Z0-9]/gu,
+      (character) =>
+        `_${character.codePointAt(0)?.toString(16).toUpperCase()}_`,
+    );
 }
 
 function resolveToken(

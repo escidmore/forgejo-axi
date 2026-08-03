@@ -1,6 +1,11 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { minimatch } from 'minimatch';
+import {
+  evaluateChecks,
+  type ApiBranch,
+  type ApiStatus,
+  type ChecksResult,
+} from './checks.js';
 import { appendPath, type ConnectionConfig } from './config.js';
 import { positiveInteger } from './args.js';
 import { ForgejoAxiError, usageError } from './errors.js';
@@ -44,23 +49,6 @@ interface ApiRepository {
   has_actions?: boolean;
   has_pull_requests?: boolean;
   open_pr_counter?: number;
-}
-
-interface ApiStatus {
-  id?: number;
-  context?: string;
-  status?: string;
-  target_url?: string;
-  description?: string;
-  updated_at?: string;
-}
-
-interface ApiBranch {
-  name?: string;
-  protected?: boolean;
-  effective_branch_protection_name?: string;
-  enable_status_check?: boolean;
-  status_check_contexts?: string[];
 }
 
 interface ApiLabel {
@@ -241,6 +229,8 @@ export interface ReviewCommentIdentity extends BodyPreview {
   commit_id: string | null;
   original_commit_id: string | null;
   diff_hunk: string;
+  diff_hunk_length: number;
+  diff_hunk_truncated: boolean;
   user: string | null;
   resolved_by: string | null;
   created_at: string | null;
@@ -316,7 +306,7 @@ export interface ArtifactDownload {
   path: string;
 }
 
-/** Run states Forgejo will no longer act on; used only to report whether a cancel changed anything. */
+/** Run states Forgejo will no longer act on; a cancel of one is skipped, not sent. */
 const DONE_RUN_STATUSES = new Set([
   'success',
   'failure',
@@ -324,44 +314,9 @@ const DONE_RUN_STATUSES = new Set([
   'skipped',
 ]);
 
-type CheckState = 'none' | 'pending' | 'failure' | 'success';
-type RequiredState =
-  | 'not_required'
-  | 'missing'
-  | 'pending'
-  | 'failure'
-  | 'success';
+export type { ChecksResult };
 
-interface NormalizedStatus {
-  context: string;
-  state: Exclude<CheckState, 'none'>;
-  description: string | null;
-  target_url: string | null;
-  updated_at: string | null;
-}
-
-interface RequiredCheck {
-  context: string;
-  state: Exclude<RequiredState, 'not_required'>;
-  matched: string[];
-}
-
-export interface ChecksResult {
-  sha: string;
-  reported: number;
-  state: CheckState;
-  statuses: NormalizedStatus[];
-  required: RequiredCheck[];
-  required_state: RequiredState;
-  passes: boolean;
-  protection: {
-    protected: boolean;
-    rule: string | null;
-    status_checks_enabled: boolean;
-  };
-}
-
-export interface MergedProof {
+export type MergedProof = {
   merged: boolean;
   number: number;
   url: string;
@@ -369,7 +324,7 @@ export interface MergedProof {
   merge_commit_sha: string | null;
   merged_at: string | null;
   merged_by: string | null;
-}
+};
 
 interface PullSearchInfo {
   complete: boolean;
@@ -407,8 +362,8 @@ export class ForgejoService {
     const capabilities = await this.probeCapabilities();
     return {
       host: {
-        url: this.config.baseUrl.toString().replace(/\/$/, ''),
-        api_url: this.config.apiUrl.toString().replace(/\/$/, ''),
+        url: canonical(this.config.baseUrl),
+        api_url: canonical(this.config.apiUrl),
       },
       auth,
       server: { version: versionResponse.data.version ?? 'unknown' },
@@ -687,7 +642,7 @@ export class ForgejoService {
     number: number,
   ): Promise<Record<string, unknown>> {
     const pull = await this.getPull(repo, number);
-    return { ...mergedProof(pull) };
+    return mergedProof(pull);
   }
 
   async listReviews(
@@ -1062,11 +1017,11 @@ export class ForgejoService {
   }> {
     const capabilities = await this.probeCapabilities();
     return {
-      runs: Boolean(capabilities['runs']),
-      run_jobs: Boolean(capabilities['run_jobs']),
-      run_cancel: Boolean(capabilities['run_cancel']),
-      run_artifacts: Boolean(capabilities['run_artifacts']),
-      job_logs: Boolean(capabilities['actions_job_logs']),
+      runs: capabilities.runs,
+      run_jobs: capabilities.run_jobs,
+      run_cancel: capabilities.run_cancel,
+      run_artifacts: capabilities.run_artifacts,
+      job_logs: capabilities.actions_job_logs,
     };
   }
 
@@ -1130,14 +1085,19 @@ export class ForgejoService {
     runId: number,
   ): Promise<Record<string, unknown>> {
     const before = await this.getRunRaw(repo, runId);
-    const wasDone = DONE_RUN_STATUSES.has(before.status ?? '');
+    // A finished run is reported unchanged without asking Forgejo to cancel it.
+    // Sending the request anyway would make the contracted no-op depend on the
+    // host tolerating a redundant cancel.
+    if (DONE_RUN_STATUSES.has(before.status ?? '')) {
+      return { cancelled: false, run: normalizeRun(this.config, repo, before) };
+    }
     await this.http.api({
       method: 'POST',
       path: `${repoPath(repo)}/actions/runs/${runId}/cancel`,
     });
     const after = await this.getRunRaw(repo, runId);
     return {
-      cancelled: !wasDone,
+      cancelled: true,
       run: normalizeRun(this.config, repo, after),
     };
   }
@@ -1169,15 +1129,16 @@ export class ForgejoService {
     for (const artifact of page.items) {
       const artifactName = requireSafeArtifactName(artifact.name);
       const artifactId = requireArtifactId(artifact.id);
-      // ponytail: whole zip buffered in memory; stream the transport if artifacts outgrow RAM
-      const response = await this.http.api<Buffer>({
-        path: `${repoPath(repo)}/actions/artifacts/${artifactId}/zip`,
-        accept: 'application/octet-stream',
-        raw: true,
-      });
       const path = join(dir, `${artifactName}.zip`);
+      let written: number;
       try {
-        await writeFile(path, response.data, { flag: 'wx' });
+        const response = await this.http.api<number>({
+          path: `${repoPath(repo)}/actions/artifacts/${artifactId}/zip`,
+          accept: 'application/octet-stream',
+          raw: true,
+          file: path,
+        });
+        written = response.data;
       } catch (error) {
         if (isNodeError(error) && error.code === 'EEXIST') {
           throw new ForgejoAxiError(
@@ -1190,7 +1151,7 @@ export class ForgejoService {
       }
       downloaded.push({
         name: artifactName,
-        size_in_bytes: artifact.size_in_bytes ?? response.data.length,
+        size_in_bytes: artifact.size_in_bytes ?? written,
         path,
       });
     }
@@ -1284,12 +1245,11 @@ export class ForgejoService {
       `${repoPath(repo)}/statuses/${encodeURIComponent(headSha)}`,
       { sort: 'recentupdate' },
     );
-    const statuses = latestStatuses(statusesPage.items);
     const branchResponse = await this.http.api<ApiBranch>({
       path: `${repoPath(repo)}/branches/${encodeURIComponent(pull.base)}`,
       allowEncodedSlash: true,
     });
-    return evaluateChecks(headSha, statuses, branchResponse.data);
+    return evaluateChecks(headSha, statusesPage.items, branchResponse.data);
   }
 
   private async getPullRaw(
@@ -1358,7 +1318,7 @@ export class ForgejoService {
     }
   }
 
-  private async probeCapabilities(): Promise<Record<string, unknown>> {
+  private async probeCapabilities(): Promise<CapabilityReport> {
     let document: unknown;
     try {
       const response = await this.http.root<unknown>({
@@ -1475,25 +1435,36 @@ function repoPath(repo: RepositoryRef): string {
   return `repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
 
+/** A canonical URL is emitted without its trailing slash. */
+function canonical(url: URL): string {
+  return url.toString().replace(/\/$/, '');
+}
+
+/** Forgejo ids and numbers are positive integers; anything else is a malformed response. */
+function requireId(value: number | undefined, message: string): number {
+  if (!Number.isSafeInteger(value) || !value || value < 1) {
+    throw new ForgejoAxiError(message, 'INVALID_RESPONSE');
+  }
+  return value;
+}
+
 function canonicalRepoUrl(
   config: ConnectionConfig,
   repo: RepositoryRef,
 ): string {
-  return appendPath(
-    config.baseUrl,
-    `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
-  )
-    .toString()
-    .replace(/\/$/, '');
+  return canonical(
+    appendPath(
+      config.baseUrl,
+      `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
+    ),
+  );
 }
 
 function canonicalRepoApiUrl(
   config: ConnectionConfig,
   repo: RepositoryRef,
 ): string {
-  return appendPath(config.apiUrl, repoPath(repo))
-    .toString()
-    .replace(/\/$/, '');
+  return canonical(appendPath(config.apiUrl, repoPath(repo)));
 }
 
 function normalizePull(
@@ -1501,13 +1472,10 @@ function normalizePull(
   repo: RepositoryRef,
   pull: ApiPullRequest,
 ): PullRequestIdentity {
-  if (!Number.isSafeInteger(pull.number) || !pull.number || pull.number < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo pull response omitted a valid number',
-      'INVALID_RESPONSE',
-    );
-  }
-  const number = pull.number;
+  const number = requireId(
+    pull.number,
+    'Forgejo pull response omitted a valid number',
+  );
   return {
     number,
     url: `${canonicalRepoUrl(config, repo)}/pulls/${number}`,
@@ -1531,14 +1499,9 @@ function normalizeLabel(
   repo: RepositoryRef,
   label: ApiLabel,
 ): LabelIdentity {
-  if (!Number.isSafeInteger(label.id) || !label.id || label.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo label response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
+  const id = requireId(label.id, 'Forgejo label response omitted a valid id');
   return {
-    id: label.id,
+    id,
     name: label.name ?? '',
     color: normalizeLabelColor(label.color),
     description: label.description ?? '',
@@ -1559,17 +1522,10 @@ function normalizeIssue(
   repo: RepositoryRef,
   issue: ApiIssue,
 ): IssueIdentity {
-  if (
-    !Number.isSafeInteger(issue.number) ||
-    !issue.number ||
-    issue.number < 1
-  ) {
-    throw new ForgejoAxiError(
-      'Forgejo issue response omitted a valid number',
-      'INVALID_RESPONSE',
-    );
-  }
-  const number = issue.number;
+  const number = requireId(
+    issue.number,
+    'Forgejo issue response omitted a valid number',
+  );
   return {
     number,
     url: `${canonicalRepoUrl(config, repo)}/issues/${number}`,
@@ -1594,14 +1550,12 @@ function normalizeComment(
   comment: ApiComment,
   full: boolean,
 ): CommentIdentity {
-  if (!Number.isSafeInteger(comment.id) || !comment.id || comment.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo comment response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
+  const id = requireId(
+    comment.id,
+    'Forgejo comment response omitted a valid id',
+  );
   return {
-    id: comment.id,
+    id,
     api_url: `${canonicalRepoApiUrl(config, repo)}/issues/comments/${comment.id}`,
     user: comment.user?.login ?? null,
     created_at: comment.created_at ?? null,
@@ -1611,13 +1565,7 @@ function normalizeComment(
 }
 
 function requireReviewId(review: ApiPullReview): number {
-  if (!Number.isSafeInteger(review.id) || !review.id || review.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo review response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
-  return review.id;
+  return requireId(review.id, 'Forgejo review response omitted a valid id');
 }
 
 function normalizeReview(
@@ -1661,20 +1609,19 @@ function normalizeReviewComment(
   comment: ApiPullReviewComment,
   context: { pull: number; review: number; full: boolean },
 ): ReviewCommentIdentity {
-  if (!Number.isSafeInteger(comment.id) || !comment.id || comment.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo review comment response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
+  const id = requireId(
+    comment.id,
+    'Forgejo review comment response omitted a valid id',
+  );
   const base = `${canonicalRepoApiUrl(config, repo)}/pulls/${context.pull}`;
+  const hunkPreview = previewBody(comment.diff_hunk, context.full);
   // Forgejo never omits these keys; it sends an empty string or a zero for an
   // anchor it does not have, so `||` is what turns "not reported" into null.
   // A comment on a removed line carries only the original_ anchor, which is
   // why both sides are reported rather than collapsed into one position.
   return {
-    id: comment.id,
-    api_url: `${base}/reviews/${context.review}/comments/${comment.id}`,
+    id,
+    api_url: `${base}/reviews/${context.review}/comments/${id}`,
     path: comment.path || null,
     position: comment.position || null,
     original_position: comment.original_position || null,
@@ -1683,7 +1630,11 @@ function normalizeReviewComment(
     // The hunk is free text like a body, so it observes the same ceiling.
     // Uncapped, a review carrying many large hunks would let the capped view
     // emit an unbounded payload while page_info still reported no truncation.
-    diff_hunk: previewText(comment.diff_hunk, context.full),
+    // The hunk reports the same measurement too, so a consumer can tell a
+    // capped hunk from a whole one.
+    diff_hunk: hunkPreview.body,
+    diff_hunk_length: hunkPreview.body_length,
+    diff_hunk_truncated: hunkPreview.body_truncated,
     user: comment.user?.login ?? null,
     resolved_by: comment.resolver?.login ?? null,
     created_at: timestampOrNull(comment.created_at),
@@ -1693,18 +1644,11 @@ function normalizeReviewComment(
 }
 
 function normalizeMilestone(milestone: ApiMilestone): MilestoneIdentity {
-  if (
-    !Number.isSafeInteger(milestone.id) ||
-    !milestone.id ||
-    milestone.id < 1
-  ) {
-    throw new ForgejoAxiError(
-      'Forgejo milestone response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
   return {
-    id: milestone.id,
+    id: requireId(
+      milestone.id,
+      'Forgejo milestone response omitted a valid id',
+    ),
     name: milestone.title ?? '',
     state: milestone.state ?? 'unknown',
   };
@@ -1715,13 +1659,7 @@ function normalizeRun(
   repo: RepositoryRef,
   run: ApiActionRun,
 ): RunIdentity {
-  if (!Number.isSafeInteger(run.id) || !run.id || run.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo run response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
-  const id = run.id;
+  const id = requireId(run.id, 'Forgejo run response omitted a valid id');
   return {
     id,
     url: `${canonicalRepoUrl(config, repo)}/actions/runs/${id}`,
@@ -1744,14 +1682,8 @@ function timestampOrNull(raw: string | undefined): string | null {
 }
 
 function normalizeJob(job: ApiActionRunJob): JobIdentity {
-  if (!Number.isSafeInteger(job.id) || !job.id || job.id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo job response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
   return {
-    id: job.id,
+    id: requireId(job.id, 'Forgejo job response omitted a valid id'),
     run_id: job.run_id ?? 0,
     name: job.name ?? '',
     status: job.status ?? 'unknown',
@@ -1772,13 +1704,7 @@ function requireSafeArtifactName(raw: string | undefined): string {
 }
 
 function requireArtifactId(id: number | undefined): number {
-  if (!Number.isSafeInteger(id) || !id || id < 1) {
-    throw new ForgejoAxiError(
-      'Forgejo artifact response omitted a valid id',
-      'INVALID_RESPONSE',
-    );
-  }
-  return id;
+  return requireId(id, 'Forgejo artifact response omitted a valid id');
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
@@ -1799,11 +1725,6 @@ function previewBody(raw: string | undefined, full: boolean): BodyPreview {
   };
 }
 
-/** previewBody's ceiling for a field that carries no measurement of its own. */
-function previewText(raw: string | undefined, full: boolean): string {
-  return previewBody(raw, full).body;
-}
-
 function sameNames(left: readonly string[], right: readonly string[]): boolean {
   if (left.length !== right.length) return false;
   const sorted = [...right].sort();
@@ -1820,7 +1741,6 @@ interface NameLookup {
   code: 'LABEL' | 'MILESTONE';
   noun: string;
   hint: string;
-  ceilingHint: string;
 }
 
 function labelLookup(repo: RepositoryRef): NameLookup {
@@ -1828,7 +1748,6 @@ function labelLookup(repo: RepositoryRef): NameLookup {
     code: 'LABEL',
     noun: 'label',
     hint: `Run \`forgejo-axi label list --repo ${repo.fullName}\``,
-    ceilingHint: 'Reduce the repository label count and retry',
   };
 }
 
@@ -1837,7 +1756,6 @@ function milestoneLookup(repo: RepositoryRef): NameLookup {
     code: 'MILESTONE',
     noun: 'milestone',
     hint: `Run \`forgejo-axi api GET repos/${repo.fullName}/milestones\``,
-    ceilingHint: 'Reduce the repository milestone count and retry',
   };
 }
 
@@ -1886,125 +1804,9 @@ function namedSearchIncomplete(
     'PAGINATION_INCOMPLETE',
     {
       details: { pages: page.pages, fetched: page.items.length },
-      suggestions: [lookup.ceilingHint],
+      suggestions: [`Reduce the repository ${lookup.noun} count and retry`],
     },
   );
-}
-
-function latestStatuses(input: ApiStatus[]): NormalizedStatus[] {
-  const latest = new Map<string, { status: ApiStatus; index: number }>();
-  input.forEach((status, index) => {
-    const context = status.context ?? '';
-    if (!context) return;
-    const previous = latest.get(context);
-    if (
-      !previous ||
-      isNewerStatus(status, index, previous.status, previous.index)
-    ) {
-      latest.set(context, { status, index });
-    }
-  });
-  return [...latest.entries()]
-    .map(([context, { status }]) => ({
-      context,
-      state: normalizeStatus(status.status),
-      description: status.description ?? null,
-      target_url: status.target_url ?? null,
-      updated_at: status.updated_at ?? null,
-    }))
-    .sort((left, right) => left.context.localeCompare(right.context));
-}
-
-function isNewerStatus(
-  candidate: ApiStatus,
-  candidateIndex: number,
-  previous: ApiStatus,
-  previousIndex: number,
-): boolean {
-  const candidateTime = Date.parse(candidate.updated_at ?? '');
-  const previousTime = Date.parse(previous.updated_at ?? '');
-  if (Number.isFinite(candidateTime) && Number.isFinite(previousTime)) {
-    return candidateTime > previousTime;
-  }
-  if (candidate.id !== undefined && previous.id !== undefined) {
-    return candidate.id > previous.id;
-  }
-  // Forgejo returns commit statuses newest-first when no explicit sort is supplied.
-  return candidateIndex < previousIndex;
-}
-
-function normalizeStatus(
-  state: string | undefined,
-): Exclude<CheckState, 'none'> {
-  if (state === 'success') return 'success';
-  if (state === 'pending') return 'pending';
-  return 'failure';
-}
-
-function evaluateChecks(
-  sha: string,
-  statuses: NormalizedStatus[],
-  branch: ApiBranch,
-): ChecksResult {
-  const statusChecksEnabled = branch.enable_status_check === true;
-  const patterns = statusChecksEnabled
-    ? (branch.status_check_contexts ?? [])
-    : [];
-  const required: RequiredCheck[] = patterns.map((pattern) => {
-    const matched = statuses.filter((status) =>
-      minimatch(status.context, pattern, { nonegate: true, nocomment: true }),
-    );
-    return {
-      context: pattern,
-      state:
-        matched.length === 0
-          ? 'missing'
-          : worstState(matched.map((status) => status.state)),
-      matched: matched.map((status) => status.context),
-    };
-  });
-  const state =
-    statuses.length === 0
-      ? 'none'
-      : worstState(statuses.map((status) => status.state));
-  const requiredState: RequiredState =
-    required.length === 0
-      ? 'not_required'
-      : worstRequired(required.map((item) => item.state));
-  return {
-    sha,
-    reported: statuses.length,
-    state,
-    statuses,
-    required,
-    required_state: requiredState,
-    passes:
-      requiredState === 'not_required'
-        ? state === 'success'
-        : requiredState === 'success',
-    protection: {
-      protected: branch.protected ?? false,
-      rule: branch.effective_branch_protection_name ?? null,
-      status_checks_enabled: statusChecksEnabled,
-    },
-  };
-}
-
-function worstState(
-  states: Array<Exclude<CheckState, 'none'>>,
-): Exclude<CheckState, 'none'> {
-  if (states.includes('failure')) return 'failure';
-  if (states.includes('pending')) return 'pending';
-  return 'success';
-}
-
-function worstRequired(
-  states: Array<Exclude<RequiredState, 'not_required'>>,
-): Exclude<RequiredState, 'not_required'> {
-  if (states.includes('failure')) return 'failure';
-  if (states.includes('missing')) return 'missing';
-  if (states.includes('pending')) return 'pending';
-  return 'success';
 }
 
 function draftTitle(title: string): string {
@@ -2060,11 +1862,15 @@ interface ProbedCapabilities {
   run_artifacts?: boolean;
 }
 
+type CapabilityReport = Record<keyof ProbedCapabilities, boolean> & {
+  probe: { source: string; complete: boolean };
+};
+
 function capabilityObject(
   capabilities: ProbedCapabilities,
   source: string,
   complete: boolean,
-): Record<string, unknown> {
+): CapabilityReport {
   return {
     pull_requests: capabilities.pull_requests ?? false,
     commit_statuses: capabilities.commit_statuses ?? false,

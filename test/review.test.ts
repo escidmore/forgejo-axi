@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
+  connection,
   invoke,
   json,
   loadFixture as load,
@@ -25,6 +26,8 @@ interface ReviewComment {
   commit_id: string | null;
   original_commit_id: string | null;
   diff_hunk: string;
+  diff_hunk_length: number;
+  diff_hunk_truncated: boolean;
   user: string | null;
   resolved_by: string | null;
   body: string;
@@ -63,9 +66,7 @@ interface DiffOutput {
 /** Only review 502 carries inline comments, matching both fixtures. */
 const COMMENTED_REVIEW = 502;
 
-afterEach(async () => {
-  await closeServers();
-});
+afterEach(closeServers);
 
 async function reviewServer(world: ReviewWorld): Promise<FakeServer> {
   // No swagger route: neither subcommand probes capabilities, so a host that
@@ -97,16 +98,6 @@ async function reviewServer(world: ReviewWorld): Promise<FakeServer> {
   });
   servers.push(server);
   return server;
-}
-
-function connection(server: FakeServer, asJson = true): string[] {
-  return [
-    '--repo',
-    'acme/widgets',
-    '--base-url',
-    server.baseUrl,
-    ...(asJson ? ['--json'] : []),
-  ];
 }
 
 /** Reviews without inline comments, so the row count is the only variable. */
@@ -295,7 +286,11 @@ describe('pr reviews', () => {
 
   it('caps a long diff hunk until --full', async () => {
     const fixture = await load<ReviewWorld>(16);
-    const hunk = `@@ -1,1 +1,1 @@\n${'+ context line\n'.repeat(80)}`;
+    // The hunk carries an astral character so these assertions discriminate
+    // code points from UTF-16 units. An ASCII-only hunk makes the two agree,
+    // which would let a UTF-16 implementation pass unnoticed.
+    const hunk = `@@ -1,1 +1,1 @@\n${'+ context 🌈 line\n'.repeat(80)}`;
+    const hunkPoints = [...hunk].length;
     const server = await reviewServer({
       ...fixture,
       reviews: [
@@ -322,17 +317,24 @@ describe('pr reviews', () => {
         },
       ],
     });
-    expect(hunk.length).toBeGreaterThan(500);
+    expect(hunkPoints).toBeGreaterThan(500);
+    expect(hunk.length).toBeGreaterThan(hunkPoints);
     const capped = parseJson<ReviewsOutput>(
       (await invoke(['pr', 'reviews', ...connection(server), '42'])).output,
     );
-    expect(capped.reviews[0]?.comments[0]?.diff_hunk).toHaveLength(500);
+    expect([...(capped.reviews[0]?.comments[0]?.diff_hunk ?? '')]).toHaveLength(
+      500,
+    );
+    expect(capped.reviews[0]?.comments[0]?.diff_hunk_truncated).toBe(true);
+    expect(capped.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunkPoints);
 
     const full = parseJson<ReviewsOutput>(
       (await invoke(['pr', 'reviews', ...connection(server), '42', '--full']))
         .output,
     );
     expect(full.reviews[0]?.comments[0]?.diff_hunk).toBe(hunk);
+    expect(full.reviews[0]?.comments[0]?.diff_hunk_truncated).toBe(false);
+    expect(full.reviews[0]?.comments[0]?.diff_hunk_length).toBe(hunkPoints);
   });
 
   it('renders an empty review list per the contract', async () => {
@@ -425,6 +427,7 @@ describe('pr diff', () => {
 
     // --json is the other complete path, and it returns the forge's bytes
     // unchanged — trailing newline included — so a saved patch still applies.
+    // Control characters are the one exception, pinned in the next test.
     const asJson = parseJson<DiffOutput>(
       (await invoke(['pr', 'diff', ...connection(server), '42'])).output,
     );
@@ -435,6 +438,22 @@ describe('pr diff', () => {
     });
     expect(asJson.diff).toBe(sent);
     expect(asJson.next).toBeUndefined();
+  });
+
+  it('strips from a diff body the control characters the encoders leave raw', async () => {
+    const fixture = await load<ReviewWorld>(16);
+    const del = String.fromCharCode(0x7f);
+    const csi = String.fromCharCode(0x9b);
+    const sent = `diff --git a/a.txt b/a.txt\n+payload${del}${csi}here\n`;
+    const server = await reviewServer({ ...fixture, diff: sent });
+    const result = await invoke(['pr', 'diff', ...connection(server), '42']);
+    expect(result.exitCode).toBeUndefined();
+    const output = parseJson<DiffOutput>(result.output);
+    // The one documented exception to byte-exactness: a diff is the most
+    // attacker-controllable document this CLI prints, so the strip wins.
+    expect(output.diff).toBe('diff --git a/a.txt b/a.txt\n+payloadhere\n');
+    expect(result.output).not.toContain(del);
+    expect(result.output).not.toContain(csi);
   });
 
   it('renders an empty diff without truncation', async () => {

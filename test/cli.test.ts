@@ -351,14 +351,21 @@ describe('CLI contract', () => {
       return json(response, 404, { message: 'not found' });
     });
     servers.push(server);
-    const connection = ['--base-url', server.baseUrl, '--json'];
+    const connectionFlags = ['--base-url', server.baseUrl, '--json'];
     const repoView = parseJson<{ repository: { full_name: string } }>(
-      (await invoke(['repo', 'view', '--repo', 'acme/widgets', ...connection]))
-        .output,
+      (
+        await invoke([
+          'repo',
+          'view',
+          '--repo',
+          'acme/widgets',
+          ...connectionFlags,
+        ])
+      ).output,
     );
     expect(repoView.repository.full_name).toBe('acme/widgets');
     const raw = parseJson<{ status: number; data: { version: string } }>(
-      (await invoke(['api', 'GET', 'version', ...connection])).output,
+      (await invoke(['api', 'GET', 'version', ...connectionFlags])).output,
     );
     expect(raw).toMatchObject({ status: 200, data: fixture.version });
     const found = parseJson<{
@@ -373,7 +380,7 @@ describe('CLI contract', () => {
           'acme/widgets',
           '--head',
           'fix/race',
-          ...connection,
+          ...connectionFlags,
         ])
       ).output,
     );
@@ -391,7 +398,7 @@ describe('CLI contract', () => {
           '--repo',
           'acme/widgets',
           '42',
-          ...connection,
+          ...connectionFlags,
         ])
       ).output,
     );
@@ -478,7 +485,7 @@ describe('CLI contract', () => {
       return json(response, 404, { message: 'not found' });
     });
     servers.push(server);
-    const connection = [
+    const connectionFlags = [
       '--repo',
       'acme/widgets',
       '--base-url',
@@ -491,7 +498,7 @@ describe('CLI contract', () => {
         await invoke([
           'pr',
           'create',
-          ...connection,
+          ...connectionFlags,
           '--title',
           'Created title',
           '--head',
@@ -513,7 +520,7 @@ describe('CLI contract', () => {
         await invoke([
           'pr',
           'update',
-          ...connection,
+          ...connectionFlags,
           '42',
           '--title',
           'Updated title',
@@ -526,7 +533,7 @@ describe('CLI contract', () => {
     });
 
     const checks = parseJson<{ checks: Record<string, unknown> }>(
-      (await invoke(['pr', 'checks', ...connection, '42'])).output,
+      (await invoke(['pr', 'checks', ...connectionFlags, '42'])).output,
     );
     expect(checks.checks).toMatchObject({
       statuses: [
@@ -549,7 +556,7 @@ describe('CLI contract', () => {
 
     const mergeability = parseJson<{
       mergeability: { mergeable: boolean; checks_pass: boolean };
-    }>((await invoke(['pr', 'mergeability', ...connection, '42'])).output);
+    }>((await invoke(['pr', 'mergeability', ...connectionFlags, '42'])).output);
     expect(mergeability.mergeability).toMatchObject({
       mergeable: true,
       checks_pass: true,
@@ -562,7 +569,7 @@ describe('CLI contract', () => {
         await invoke([
           'pr',
           'merge',
-          ...connection,
+          ...connectionFlags,
           '42',
           '--expected-head',
           'abc123',
@@ -962,5 +969,88 @@ describe('label command family', () => {
     );
     expect(failed.exitCode).toBe(1);
     expect(failed.output).not.toContain('super-secret-token');
+  });
+
+  it('pins the encoded bytes for control characters, empty arrays, and # scalars', async () => {
+    const esc = String.fromCharCode(0x1b);
+    const del = String.fromCharCode(0x7f);
+    const csi = String.fromCharCode(0x9b);
+    const osc = String.fromCharCode(0x9d);
+    const server = await labelServer([
+      {
+        id: 7,
+        name: 'bug',
+        color: 'd73a4a',
+        // The encoder escapes ESC but emits DEL and C1 raw, so render()
+        // drops those; the encoded bytes below are the same either way.
+        description: `red${esc}[31m${del}${csi}${osc} alert`,
+      },
+    ]);
+    const listed = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+    ]);
+    expect(listed.exitCode).toBeUndefined();
+    expect(listed.output).toBe(
+      'labels[1]{id,name,color,description,is_archived,api_url}:\n' +
+        `  7,bug,"#d73a4a","red\\u001b[31m alert",false,"${server.baseUrl}/api/v1/repos/acme/widgets/labels/7"\n` +
+        'page_info:\n' +
+        '  complete: true\n' +
+        '  pages: 1\n' +
+        '  fetched: 1\n' +
+        '  total: 1\n' +
+        '  displayed: 1\n' +
+        '  truncated: false\n',
+    );
+    expect(listed.output).not.toContain(esc);
+
+    // JSON.stringify escapes C0 but leaves DEL and C1 raw, so this path
+    // depends on the same strip.
+    const asJson = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(asJson.exitCode).toBeUndefined();
+    for (const output of [listed.output, asJson.output]) {
+      expect(output).not.toContain(del);
+      expect(output).not.toContain(csi);
+      expect(output).not.toContain(osc);
+    }
+    // ESC survives as its escape sequence, inert on the wire and a control
+    // character again only once a consumer parses the JSON.
+    expect(
+      (JSON.parse(asJson.output) as { labels: { description: string }[] })
+        .labels[0]?.description,
+    ).toBe(`red${esc}[31m alert`);
+
+    const empty = await labelServer([]);
+    const none = await invoke([
+      'label',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      empty.baseUrl,
+    ]);
+    expect(none.exitCode).toBeUndefined();
+    expect(none.output).toBe(
+      'labels: []\n' +
+        'page_info:\n' +
+        '  complete: true\n' +
+        '  pages: 1\n' +
+        '  fetched: 0\n' +
+        '  total: 0\n' +
+        '  displayed: 0\n' +
+        '  truncated: false\n',
+    );
   });
 });

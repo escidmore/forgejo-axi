@@ -33,15 +33,13 @@ export async function startServer(
   let handlerError: unknown;
   const server = createServer(async (request, response) => {
     try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
       const recorded: RecordedRequest = {
         method: request.method ?? 'GET',
         url: request.url ?? '/',
         headers: request.headers,
-        body: Buffer.concat(chunks).toString('utf8'),
+        // Byte-faithful capture: text() would strip a BOM and replace
+        // non-UTF-8 bytes before assertions could see them.
+        body: Buffer.concat(await request.toArray()).toString('utf8'),
       };
       requests.push(recorded);
       await handler(request, response, recorded);
@@ -85,6 +83,17 @@ export const servers: FakeServer[] = [];
 export async function closeServers(): Promise<void> {
   process.exitCode = undefined;
   await Promise.all(servers.splice(0).map((server) => server.close()));
+}
+
+/** CLI connection flags for a fake-server test repository. */
+export function connection(server: FakeServer, json = true): string[] {
+  return [
+    '--repo',
+    'acme/widgets',
+    '--base-url',
+    server.baseUrl,
+    ...(json ? ['--json'] : []),
+  ];
 }
 
 export async function loadFixture<T>(version: 15 | 16): Promise<T> {

@@ -10,6 +10,7 @@
 //   FORGEJO_LIVE_REPO=owner/disposable          (arms the harness)
 //   FORGEJO_EXPECT_VERSION=16.0                 (optional; overrides the lane)
 //   FORGEJO_CA_FILE=/path/to/ca.pem             (optional)
+//   FORGEJO_LIVE_RUNNER_LABEL=live              (optional; arms the runner probes)
 //
 // This mutates FORGEJO_LIVE_REPO. Three independent guards must pass first: the
 // harness reads its target from FORGEJO_LIVE_REPO rather than the ordinary
@@ -21,6 +22,9 @@
 import { Buffer } from 'node:buffer';
 import { execFile, execFileSync } from 'node:child_process';
 import console from 'node:console';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { URL } from 'node:url';
@@ -64,6 +68,11 @@ const REPO = required('FORGEJO_LIVE_REPO');
 // would pass against a host that never said what it was.
 const EXPECT_VERSION = process.env['FORGEJO_EXPECT_VERSION'] || LANE.expect;
 const CA_FILE = process.env['FORGEJO_CA_FILE'];
+// Arms the runner-dependent probes, and names the label the seeded workflows
+// ask for. Unset, this lane runs exactly as it did before a runner existed —
+// the paths below are the ones docs/live-test-matrix.md records as uncovered
+// precisely because no fake server can answer them.
+const RUNNER_LABEL = process.env['FORGEJO_LIVE_RUNNER_LABEL'];
 
 const CONN = [
   '--base-url',
@@ -106,6 +115,11 @@ function cli(args, { allowFail = false } = {}) {
     throw new Error(`${args.join(' ')} gave non-JSON => ${out.slice(0, 300)}`);
   }
 }
+
+// Nearly every invocation targets the lane repository; the exceptions
+// (the status probe and raw api paths) skip withRepo and call cli directly.
+const withRepo = (args) => [...args, '--repo', REPO];
+const repoCli = (args, options) => cli(withRepo(args), options);
 
 async function raw(method, path, body) {
   const response = await globalThis.fetch(`${API}/${path}`, {
@@ -168,12 +182,10 @@ const seedStatus = (sha, state, context) =>
 // underneath is refused rather than merged.
 async function mergeWhenReady(number, method, expectedHead) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = cli(
+    const result = repoCli(
       [
         'pr',
         'merge',
-        '--repo',
-        REPO,
         String(number),
         '--method',
         method,
@@ -246,7 +258,7 @@ const created = {
   milestone: null,
   pulls: [],
   branches: [],
-  protection: null,
+  protections: [],
 };
 
 // Every probe branch carries the per-run prefix, so cleanup can never reach a
@@ -270,18 +282,47 @@ async function probeBranch(name, from) {
   return response;
 }
 
+const TERMINAL_RUN = new Set(['success', 'failure', 'cancelled', 'skipped']);
+
+// Seeding a workflow onto its own branch makes the push that creates the branch
+// the event that triggers the run, so one request both installs and fires it.
+// The action reference resolves through the host's configured actions source,
+// so a host pointed somewhere other than code.forgejo.org needs it adjusted.
+async function workflowBranch(name, yaml) {
+  const response = await raw(
+    'POST',
+    `repos/${REPO}/contents/.forgejo/workflows/${name}.yml`,
+    {
+      content: Buffer.from(yaml).toString('base64'),
+      message: `live: ${name}`,
+      new_branch: name,
+    },
+  );
+  if (response.status !== 201) {
+    throw new Error(`could not seed workflow ${name} => ${response.status}`);
+  }
+  created.branches.push(name);
+  return response;
+}
+
+// Forgejo queues the run after the push returns, and a runner claims it some
+// time after that. Returning null rather than throwing keeps an idle or
+// mislabelled runner reported as one failed assertion instead of cancelling
+// every probe that follows it.
+async function waitForRun(branch, done, what, tries = 60) {
+  for (let i = 0; i < tries; i += 1) {
+    const run = (repoCli(['run', 'list', '--branch', branch]).runs ?? [])[0];
+    if (run && done(run)) return run;
+    await sleep(2000);
+  }
+  console.log(`  timed out after ${tries * 2}s waiting for ${what}`);
+  return null;
+}
+
 try {
   // ---- seed ----------------------------------------------------------------
   for (const name of ['live-bug', 'live-triage']) {
-    const outcome = cli([
-      'label',
-      'create',
-      '--repo',
-      REPO,
-      name,
-      '--color',
-      '#ededed',
-    ]);
+    const outcome = repoCli(['label', 'create', name, '--color', '#ededed']);
     // `label create` reconciles an existing label rather than duplicating it,
     // so tracking the name unconditionally would make cleanup delete a label
     // the repository already owned.
@@ -292,11 +333,9 @@ try {
   ok('seed milestone', ms.status === 201);
 
   // ---- create / view -------------------------------------------------------
-  const made = cli([
+  const made = repoCli([
     'issue',
     'create',
-    '--repo',
-    REPO,
     '--title',
     'live: scheduler race',
     '--body',
@@ -322,11 +361,9 @@ try {
   );
 
   // ---- edit reconcile ------------------------------------------------------
-  const edit1 = cli([
+  const edit1 = repoCli([
     'issue',
     'edit',
-    '--repo',
-    REPO,
     String(n),
     '--label',
     'live-bug,live-triage',
@@ -335,45 +372,31 @@ try {
     'edit replaces labels through the labels endpoint',
     edit1.updated === true && edit1.issue.labels.length === 2,
   );
-  const edit2 = cli([
+  const edit2 = repoCli([
     'issue',
     'edit',
-    '--repo',
-    REPO,
     String(n),
     '--label',
     'live-bug,live-triage',
   ]);
   ok('repeat edit is a no-op', edit2.updated === false);
 
-  const cleared = cli([
-    'issue',
-    'edit',
-    '--repo',
-    REPO,
-    String(n),
-    '--milestone',
-    '',
-  ]);
+  const cleared = repoCli(['issue', 'edit', String(n), '--milestone', '']);
   ok('an empty value clears the milestone', cleared.issue.milestone === null);
 
   // ---- comment / close / reopen -------------------------------------------
-  const commented = cli([
+  const commented = repoCli([
     'issue',
     'comment',
-    '--repo',
-    REPO,
     String(n),
     '--body',
     'live comment',
   ]);
   ok('comment returns an identity', Number.isInteger(commented.comment.id));
 
-  const closed = cli([
+  const closed = repoCli([
     'issue',
     'close',
-    '--repo',
-    REPO,
     String(n),
     '--comment',
     'closing from the live matrix',
@@ -387,24 +410,17 @@ try {
   ok('closed_at populated', Boolean(closed.issue.closed_at));
   ok(
     'reopen restores open',
-    cli(['issue', 'reopen', '--repo', REPO, String(n)]).issue.state === 'open',
+    repoCli(['issue', 'reopen', String(n)]).issue.state === 'open',
   );
   ok(
     'reopen is idempotent',
-    cli(['issue', 'reopen', '--repo', REPO, String(n)]).updated === false,
+    repoCli(['issue', 'reopen', String(n)]).updated === false,
   );
 
   // ---- filters must actually narrow ----------------------------------------
   // Forgejo answers an unrecognised filter with an unfiltered list, so a filter
   // that silently does nothing looks exactly like one that works.
-  const other = cli([
-    'issue',
-    'create',
-    '--repo',
-    REPO,
-    '--title',
-    'live: unrelated',
-  ]);
+  const other = repoCli(['issue', 'create', '--title', 'live: unrelated']);
   created.issues.push(other.issue.number);
   const excludesOther = (list) =>
     list.issues.every((i) => i.number !== other.issue.number) &&
@@ -412,32 +428,28 @@ try {
 
   ok(
     'label filter narrows',
-    excludesOther(
-      cli(['issue', 'list', '--repo', REPO, '--label', 'live-triage']),
-    ),
+    excludesOther(repoCli(['issue', 'list', '--label', 'live-triage'])),
   );
-  cli(['issue', 'edit', '--repo', REPO, String(n), '--milestone', 'v-live']);
+  repoCli(['issue', 'edit', String(n), '--milestone', 'v-live']);
   ok(
     'milestone filter narrows',
-    excludesOther(
-      cli(['issue', 'list', '--repo', REPO, '--milestone', 'v-live']),
-    ),
+    excludesOther(repoCli(['issue', 'list', '--milestone', 'v-live'])),
   );
   const owner = REPO.split('/')[0];
-  cli(['issue', 'edit', '--repo', REPO, String(n), '--assignee', owner]);
+  repoCli(['issue', 'edit', String(n), '--assignee', owner]);
   ok(
     'assignee filter narrows',
-    excludesOther(cli(['issue', 'list', '--repo', REPO, '--assignee', owner])),
+    excludesOther(repoCli(['issue', 'list', '--assignee', owner])),
   );
   ok(
     'state filter narrows',
-    cli(['issue', 'list', '--repo', REPO, '--state', 'closed']).issues.every(
+    repoCli(['issue', 'list', '--state', 'closed']).issues.every(
       (i) => i.number !== n,
     ),
   );
   ok(
     'unknown filter label refuses',
-    cli(['issue', 'list', '--repo', REPO, '--label', 'no-such-label'], {
+    repoCli(['issue', 'list', '--label', 'no-such-label'], {
       allowFail: true,
     }).code === 'LABEL_NOT_FOUND',
   );
@@ -445,14 +457,7 @@ try {
   // ---- does this host paginate comments? -----------------------------------
   // The whole thread is read in one request. If a host ever honours page/limit
   // that read silently truncates, so this must be proven per lane.
-  const long = cli([
-    'issue',
-    'create',
-    '--repo',
-    REPO,
-    '--title',
-    'live: comment thread',
-  ]);
+  const long = repoCli(['issue', 'create', '--title', 'live: comment thread']);
   const t = long.issue.number;
   created.issues.push(t);
   for (let i = 1; i <= 55; i += 1)
@@ -472,7 +477,7 @@ try {
     ),
     `page1=${p1.data.length} page2=${p2.data.length} total=${p1.total} link=${p1.link ? 'yes' : 'none'}`,
   );
-  const viewed = cli(['issue', 'view', '--repo', REPO, String(t), '--full']);
+  const viewed = repoCli(['issue', 'view', String(t), '--full']);
   ok('issue view returns the whole thread', viewed.comments.length === 55);
   ok(
     'comment_info counts match',
@@ -480,24 +485,16 @@ try {
   );
 
   // ---- body preview --------------------------------------------------------
-  const big = cli([
+  const big = repoCli([
     'issue',
     'create',
-    '--repo',
-    REPO,
     '--title',
     'live: long body',
     '--body',
     'x'.repeat(600),
   ]);
   created.issues.push(big.issue.number);
-  const preview = cli([
-    'issue',
-    'view',
-    '--repo',
-    REPO,
-    String(big.issue.number),
-  ]);
+  const preview = repoCli(['issue', 'view', String(big.issue.number)]);
   ok(
     'body preview elides at 500 code points',
     preview.issue.body.length === 500 &&
@@ -507,7 +504,7 @@ try {
   );
 
   // ---- repo view -----------------------------------------------------------
-  const repo = cli(['repo', 'view', '--repo', REPO]).repository;
+  const repo = repoCli(['repo', 'view']).repository;
   ok(
     'repo view reports canonical identity',
     repo.full_name === REPO &&
@@ -519,17 +516,15 @@ try {
   // workflow has run — exactly the envelope a hand-written fixture once got
   // wrong, so decode it against the genuine article.
   if (probed.capabilities?.runs === true) {
-    const runs = cli(['run', 'list', '--repo', REPO]);
+    const runs = repoCli(['run', 'list']);
     ok(
       'run list decodes the real envelope',
       Array.isArray(runs.runs) && runs.page_info.complete === true,
       `fetched=${runs.runs.length}`,
     );
-    const filtered = cli([
+    const filtered = repoCli([
       'run',
       'list',
-      '--repo',
-      REPO,
       '--status',
       'success',
       '--branch',
@@ -541,16 +536,183 @@ try {
     );
     ok(
       'run view maps a missing run to NOT_FOUND',
-      cli(['run', 'view', '--repo', REPO, '999999999'], { allowFail: true })
-        .code === 'NOT_FOUND',
+      repoCli(['run', 'view', '999999999'], { allowFail: true }).code ===
+        'NOT_FOUND',
     );
   } else {
-    const unsupported = cli(['run', 'list', '--repo', REPO], {
+    const unsupported = repoCli(['run', 'list'], {
       allowFail: true,
     });
     ok(
       'run family reports unsupported from the probe',
       unsupported.supported === false && unsupported.capability === 'runs',
+    );
+  }
+
+  // ---- run family, runner required -----------------------------------------
+  // Job logs, artifact download, and the cancel of a genuinely running run are
+  // the paths docs/live-test-matrix.md records as uncovered: a fake server can
+  // return whatever shape we ask it for, so only a real runner settles them.
+  if (RUNNER_LABEL && probed.capabilities?.runs === true) {
+    const marker = `live-marker-${BRANCH}`;
+    const quick = `${BRANCH}-wf-quick`;
+    // Deliberately one step and no action: whether a run reaches success and
+    // whether its logs come back must not depend on artifact upload, which
+    // reaches the host from inside the job container and so fails for reasons
+    // of its own.
+    await workflowBranch(
+      quick,
+      [
+        'name: live-quick',
+        'on: [push]',
+        'jobs:',
+        '  quick:',
+        `    runs-on: ${RUNNER_LABEL}`,
+        '    steps:',
+        `      - run: echo "${marker}"`,
+        '',
+      ].join('\n'),
+    );
+    const quickRun = await waitForRun(
+      quick,
+      (run) => TERMINAL_RUN.has(run.status),
+      'the seeded workflow to finish',
+    );
+    ok(
+      'a pushed workflow produces a real run',
+      quickRun?.status === 'success',
+      `status=${quickRun?.status ?? 'none'}`,
+    );
+
+    if (quickRun && probed.capabilities?.actions_job_logs === true) {
+      const viewed = repoCli(['run', 'view', String(quickRun.id), '--log']);
+      const logs = (viewed.jobs ?? []).map((job) => job.log ?? '');
+      ok(
+        'run view --log decodes real runner output',
+        logs.some((log) => log.includes(marker)),
+        `jobs=${logs.length}`,
+      );
+    }
+
+    if (probed.capabilities?.run_artifacts === true) {
+      const upload = `${BRANCH}-wf-artifact`;
+      // No checkout: the job writes the file it uploads, so this depends on one
+      // action rather than two.
+      await workflowBranch(
+        upload,
+        [
+          'name: live-artifact',
+          'on: [push]',
+          'jobs:',
+          '  upload:',
+          `    runs-on: ${RUNNER_LABEL}`,
+          '    steps:',
+          `      - run: mkdir -p out && echo "${marker}" > out/live.txt`,
+          '      - uses: forgejo/upload-artifact@v4',
+          '        with:',
+          '          name: live-artifact',
+          '          path: out',
+          '',
+        ].join('\n'),
+      );
+      const uploadRun = await waitForRun(
+        upload,
+        (run) => TERMINAL_RUN.has(run.status),
+        'the artifact workflow to finish',
+      );
+      // Upload runs from inside the job container rather than from the runner,
+      // so it is the first probe here to need the host reachable from the
+      // workflow network.
+      ok(
+        'a workflow uploads an artifact to the host',
+        uploadRun?.status === 'success',
+        `status=${uploadRun?.status ?? 'none'}`,
+      );
+
+      if (uploadRun?.status === 'success') {
+        const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-live-'));
+        try {
+          const got = repoCli([
+            'run',
+            'download',
+            String(uploadRun.id),
+            '--dir',
+            dir,
+          ]);
+          const [artifact] = got.downloaded ?? [];
+          ok(
+            'run download writes a real artifact to disk',
+            artifact?.name === 'live-artifact' && artifact.size_in_bytes > 0,
+            `bytes=${artifact?.size_in_bytes ?? 0}`,
+          );
+        } finally {
+          await rm(dir, { recursive: true, force: true });
+        }
+      }
+    }
+
+    if (probed.capabilities?.run_cancel === true) {
+      const slow = `${BRANCH}-wf-sleep`;
+      await workflowBranch(
+        slow,
+        [
+          'name: live-sleep',
+          'on: [push]',
+          'jobs:',
+          '  slow:',
+          `    runs-on: ${RUNNER_LABEL}`,
+          '    steps:',
+          '      - run: sleep 120',
+          '',
+        ].join('\n'),
+      );
+      const running = await waitForRun(
+        slow,
+        (run) => run.status === 'running',
+        'the sleeping workflow to start',
+      );
+      ok('a seeded workflow reaches running', running !== null);
+
+      if (running) {
+        const stopped = repoCli(['run', 'cancel', String(running.id)]);
+        ok(
+          'run cancel stops a genuinely running run',
+          stopped.cancelled === true,
+          `status=${stopped.run?.status}`,
+        );
+        const settled = await waitForRun(
+          slow,
+          (run) => TERMINAL_RUN.has(run.status),
+          'the cancelled run to settle',
+        );
+        const repeat = repoCli(['run', 'cancel', String(running.id)], {
+          allowFail: true,
+        });
+        ok(
+          'cancelling a finished run is the contracted no-op',
+          repeat.cancelled === false && repeat.run?.status === settled?.status,
+          `status=${repeat.run?.status}`,
+        );
+        // The CLI now returns before sending this, so only a direct call can
+        // say what the host would have answered. Recorded rather than asserted:
+        // both answers are legitimate, and which one it is decides whether the
+        // pre-check needs to grow a CONFLICT recovery for the run that finishes
+        // between the read and the POST.
+        const direct = await globalThis.fetch(
+          `${API}/repos/${REPO}/actions/runs/${running.id}/cancel`,
+          { method: 'POST', headers: { authorization: `token ${TOKEN}` } },
+        );
+        ok(
+          'host answered a redundant cancel of a finished run',
+          direct.status > 0,
+          `http=${direct.status} (2xx: the old unconditional POST was safe)`,
+        );
+      }
+    }
+  } else if (!RUNNER_LABEL) {
+    console.log(
+      'runner probes skipped — set FORGEJO_LIVE_RUNNER_LABEL to a label the ' +
+        'repository runner advertises',
     );
   }
 
@@ -584,7 +746,7 @@ try {
     `pages=${walked.page_info.pages} fetched=${walked.page_info.fetched}`,
   );
 
-  const allLabels = cli(['label', 'list', '--repo', REPO, '--full']);
+  const allLabels = repoCli(['label', 'list', '--full']);
   const listedNames = new Set(allLabels.labels.map((l) => l.name));
   ok(
     'label list crosses the page boundary',
@@ -595,15 +757,8 @@ try {
 
   ok(
     'label edit updates in place',
-    cli([
-      'label',
-      'edit',
-      '--repo',
-      REPO,
-      'live-triage',
-      '--description',
-      'live edited',
-    ]).updated === true,
+    repoCli(['label', 'edit', 'live-triage', '--description', 'live edited'])
+      .updated === true,
   );
 
   // ---- pull request lane ---------------------------------------------------
@@ -612,12 +767,18 @@ try {
     message: 'live: seed base',
   });
   await probeBranch(BRANCH);
+  // Only a long line pushes a hunk past the ceiling. Forgejo anchors diff_hunk
+  // to the hunk header plus the commented line, so a file of any length still
+  // yields a hunk of tens of characters.
+  await raw('POST', `repos/${REPO}/contents/${BRANCH}-long.txt`, {
+    content: Buffer.from(`${'x'.repeat(600)}\n`).toString('base64'),
+    message: 'live: seed long line',
+    branch: BRANCH,
+  });
 
-  const pr = cli([
+  const pr = repoCli([
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     BRANCH,
     '--base',
@@ -629,11 +790,9 @@ try {
   if (PULL !== null) created.pulls.push(PULL);
   ok('open a pull request', Number.isInteger(PULL));
 
-  const posted = cli([
+  const posted = repoCli([
     'issue',
     'comment',
-    '--repo',
-    REPO,
     String(PULL),
     '--body',
     'live: threaded into PR discussion',
@@ -650,18 +809,15 @@ try {
   );
   ok(
     'issue view flags a pull request',
-    cli(['issue', 'view', '--repo', REPO, String(PULL)]).issue
-      .is_pull_request === true,
+    repoCli(['issue', 'view', String(PULL)]).issue.is_pull_request === true,
   );
 
   // Only meaningful once a pull request exists, and only if the field is
   // actually selected — the default schema omits it, so asking without
   // --fields would compare against undefined and prove nothing.
-  const listed = cli([
+  const listed = repoCli([
     'issue',
     'list',
-    '--repo',
-    REPO,
     '--full',
     '--fields',
     'number,is_pull_request',
@@ -676,34 +832,26 @@ try {
   // ---- pull request reads --------------------------------------------------
   ok(
     'pr list includes the open pull request',
-    cli(['pr', 'list', '--repo', REPO, '--full']).pull_requests.some(
+    repoCli(['pr', 'list', '--full']).pull_requests.some(
       (p) => p.number === PULL,
     ),
   );
   ok(
     'pr find locates it by head branch',
-    cli(['pr', 'find', '--repo', REPO, '--head', BRANCH]).pull_request
-      .number === PULL,
+    repoCli(['pr', 'find', '--head', BRANCH]).pull_request.number === PULL,
   );
-  const prView = cli(['pr', 'view', '--repo', REPO, String(PULL)]).pull_request;
+  const prView = repoCli(['pr', 'view', String(PULL)]).pull_request;
   ok('pr view reports the head sha', /^[0-9a-f]{40}$/.test(prView.head_sha));
   ok(
     'pr update changes the title',
-    cli([
-      'pr',
-      'update',
-      '--repo',
-      REPO,
-      String(PULL),
-      '--title',
-      'live: probe (updated)',
-    ]).pull_request.title === 'live: probe (updated)',
+    repoCli(['pr', 'update', String(PULL), '--title', 'live: probe (updated)'])
+      .pull_request.title === 'live: probe (updated)',
   );
 
   // ---- checks against real commit statuses ---------------------------------
   // An empty status set must read as none, never as a failure — a host without
   // Actions has no statuses to report and that is not a red check.
-  const empty = cli(['pr', 'checks', '--repo', REPO, String(PULL)]);
+  const empty = repoCli(['pr', 'checks', String(PULL)]);
   ok(
     'no statuses reads as none, not failure',
     empty.checks.reported === 0 && empty.checks.state === 'none',
@@ -711,7 +859,7 @@ try {
   );
 
   await seedStatus(prView.head_sha, 'success', 'live/probe');
-  const green = cli(['pr', 'checks', '--repo', REPO, String(PULL)]);
+  const green = repoCli(['pr', 'checks', String(PULL)]);
   ok(
     'pr checks aggregates a real commit status',
     green.checks.reported === 1 &&
@@ -719,13 +867,7 @@ try {
       green.checks.statuses.some((s) => s.context === 'live/probe'),
     `reported=${green.checks.reported} state=${green.checks.state}`,
   );
-  const mergeability = cli([
-    'pr',
-    'mergeability',
-    '--repo',
-    REPO,
-    String(PULL),
-  ]);
+  const mergeability = repoCli(['pr', 'mergeability', String(PULL)]);
   ok(
     'mergeability reflects the real head and checks',
     mergeability.mergeability.head_sha === prView.head_sha &&
@@ -734,14 +876,14 @@ try {
   );
 
   // ---- reviews and diff (read-only) ----------------------------------------
-  const noReviews = cli(['pr', 'reviews', '--repo', REPO, String(PULL)]);
+  const noReviews = repoCli(['pr', 'reviews', String(PULL)]);
   ok(
     'a pull request with no reviews lists none',
     noReviews.reviews.length === 0 && noReviews.page_info.fetched === 0,
     `fetched=${noReviews.page_info.fetched}`,
   );
 
-  const diff = cli(['pr', 'diff', '--repo', REPO, String(PULL)]);
+  const diff = repoCli(['pr', 'diff', String(PULL)]);
   ok(
     'pr diff returns the diff Forgejo generates for the pull request',
     diff.diff.includes('diff --git') &&
@@ -758,6 +900,11 @@ try {
     body: 'live probe review',
     comments: [
       { path: `${BRANCH}.txt`, new_position: 1, body: 'live inline probe' },
+      {
+        path: `${BRANCH}-long.txt`,
+        new_position: 1,
+        body: 'live long-line probe',
+      },
     ],
   });
   ok(
@@ -765,7 +912,7 @@ try {
     submitted.status === 200,
     `status=${submitted.status}`,
   );
-  const reviewed = cli(['pr', 'reviews', '--repo', REPO, String(PULL)]);
+  const reviewed = repoCli(['pr', 'reviews', String(PULL)]);
   const probe = reviewed.reviews.find(
     (review) => review.body === 'live probe review',
   );
@@ -776,18 +923,34 @@ try {
       probe.comments.some((comment) => comment.path === `${BRANCH}.txt`),
     `state=${probe?.state} comments=${probe?.comments.length}`,
   );
+  // A real hunk is short enough to survive the ceiling, so the measurement must
+  // report the hunk that came back rather than a cap.
+  const inline = probe?.comments.find(
+    (comment) => comment.path === `${BRANCH}.txt`,
+  );
+  ok(
+    'an untruncated diff hunk reports its own code-point length',
+    typeof inline?.diff_hunk === 'string' &&
+      inline.diff_hunk.length > 0 &&
+      inline.diff_hunk_truncated === false &&
+      inline.diff_hunk_length === [...inline.diff_hunk].length,
+    `length=${inline?.diff_hunk_length} truncated=${inline?.diff_hunk_truncated}`,
+  );
+  const longInline = probe?.comments.find(
+    (comment) => comment.path === `${BRANCH}-long.txt`,
+  );
+  const cappedPoints = [...(longInline?.diff_hunk ?? '')].length;
+  ok(
+    'a diff hunk past the ceiling caps at 500 and reports its whole length',
+    longInline?.diff_hunk_truncated === true &&
+      cappedPoints === 500 &&
+      longInline.diff_hunk_length > 500,
+    `length=${longInline?.diff_hunk_length} capped=${cappedPoints}`,
+  );
 
   // The expected-head guard must refuse a stale head rather than merge it.
-  const raced = cli(
-    [
-      'pr',
-      'merge',
-      '--repo',
-      REPO,
-      String(PULL),
-      '--expected-head',
-      '0'.repeat(40),
-    ],
+  const raced = repoCli(
+    ['pr', 'merge', String(PULL), '--expected-head', '0'.repeat(40)],
     { allowFail: true },
   );
   const stillOpen = await raw('GET', `repos/${REPO}/pulls/${PULL}`);
@@ -809,7 +972,7 @@ try {
   );
   ok(
     'pr merged proves the merge independently',
-    Boolean(cli(['pr', 'merged', '--repo', REPO, String(PULL)]).proof),
+    Boolean(repoCli(['pr', 'merged', String(PULL)]).proof),
   );
 
   // ---- the merge methods other than squash ---------------------------------
@@ -818,11 +981,9 @@ try {
   for (const method of ['merge', 'rebase']) {
     const branch = `${BRANCH}-${method}`;
     await probeBranch(branch);
-    const opened = cli([
+    const opened = repoCli([
       'pr',
       'create',
-      '--repo',
-      REPO,
       '--head',
       branch,
       '--base',
@@ -851,8 +1012,6 @@ try {
   const openArgs = [
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     reconcileBranch,
     '--base',
@@ -860,20 +1019,20 @@ try {
     '--body',
     'reconcile probe',
   ];
-  const firstOpen = cli([...openArgs, '--title', 'live: reconcile']);
+  const firstOpen = repoCli([...openArgs, '--title', 'live: reconcile']);
   created.pulls.push(firstOpen.pull_request.number);
   ok(
     'pr create opens a new pull request',
     firstOpen.created === true && firstOpen.updated === false,
   );
-  const repeated = cli([...openArgs, '--title', 'live: reconcile']);
+  const repeated = repoCli([...openArgs, '--title', 'live: reconcile']);
   ok(
     'pr create against the desired state is exit 0 and mutation-free',
     repeated.created === false &&
       repeated.updated === false &&
       repeated.pull_request.number === firstOpen.pull_request.number,
   );
-  const retitled = cli([...openArgs, '--title', 'live: reconcile (moved)']);
+  const retitled = repoCli([...openArgs, '--title', 'live: reconcile (moved)']);
   ok(
     'pr create reconciles a differing title onto the existing pull request',
     retitled.created === false &&
@@ -899,11 +1058,9 @@ try {
     );
   }
   created.pulls.push(outOfBand.data.number);
-  const adopted = cli([
+  const adopted = repoCli([
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     adoptBranch,
     '--base',
@@ -928,18 +1085,18 @@ try {
   await probeBranch(raceBranch);
   const racers = await Promise.all(
     [0, 1, 2].map(() =>
-      cliConcurrent([
-        'pr',
-        'create',
-        '--repo',
-        REPO,
-        '--head',
-        raceBranch,
-        '--base',
-        'main',
-        '--title',
-        'live: race',
-      ]),
+      cliConcurrent(
+        withRepo([
+          'pr',
+          'create',
+          '--head',
+          raceBranch,
+          '--base',
+          'main',
+          '--title',
+          'live: race',
+        ]),
+      ),
     ),
   );
   const raceNumbers = [
@@ -965,18 +1122,16 @@ try {
     enable_status_check: true,
     status_check_contexts: ['live/required'],
   });
-  if (protection.status === 201) created.protection = protBase;
+  if (protection.status === 201) created.protections.push(protBase);
   ok(
     'provision a protected base branch with a required context',
     protection.status === 201,
     `status=${protection.status}`,
   );
   await probeBranch(protHead, protBase);
-  const protPull = cli([
+  const protPull = repoCli([
     'pr',
     'create',
-    '--repo',
-    REPO,
     '--head',
     protHead,
     '--base',
@@ -987,8 +1142,7 @@ try {
   const protNumber = protPull.pull_request.number;
   const protSha = protPull.pull_request.head_sha;
   created.pulls.push(protNumber);
-  const protChecks = () =>
-    cli(['pr', 'checks', '--repo', REPO, String(protNumber)]).checks;
+  const protChecks = () => repoCli(['pr', 'checks', String(protNumber)]).checks;
 
   const missing = protChecks();
   ok(
@@ -1034,13 +1188,77 @@ try {
     );
   }
 
+  // ---- required patterns in Forgejo's own glob dialect ----------------------
+  // Forgejo compiles required contexts with glob.Compile and no separator, so
+  // `*` and `?` cross `/`. One reported Check of `live/crossing` satisfies all
+  // four rules below, each exercising a different construct: a star that has
+  // to cross a separator, a `?` that has to land on one, a class, and brace
+  // alternation. Escapes and astral runes stay in the unit table — a Check
+  // named `live*` is not worth provisioning against a real host.
+  //
+  // The host is the oracle: settle polls Forgejo's own `mergeable`, computed
+  // server-side from these same rules. The agreement assertion compares the
+  // two verdicts rather than naming either, so it holds whichever way they
+  // move; the assertion above it pins what the host decided, without which
+  // two systems that both refused would agree and prove nothing.
+  const crossBase = `${BRANCH}-crossing`;
+  const crossHead = `${BRANCH}-crossing-head`;
+  await probeBranch(crossBase);
+  const crossRule = await raw('POST', `repos/${REPO}/branch_protections`, {
+    branch_name: crossBase,
+    enable_status_check: true,
+    status_check_contexts: [
+      'live*',
+      'live/cross?ng',
+      'live[!x]*',
+      'live/{crossing,other}',
+    ],
+  });
+  if (crossRule.status === 201) created.protections.push(crossBase);
+  ok(
+    'provision a protected branch requiring several glob constructs',
+    crossRule.status === 201,
+    `status=${crossRule.status}`,
+  );
+  await probeBranch(crossHead, crossBase);
+  const crossPull = repoCli([
+    'pr',
+    'create',
+    '--head',
+    crossHead,
+    '--base',
+    crossBase,
+    '--title',
+    'live: required contexts in the glob dialect',
+  ]);
+  const crossNumber = crossPull.pull_request.number;
+  created.pulls.push(crossNumber);
+  await seedStatus(crossPull.pull_request.head_sha, 'success', 'live/crossing');
+  const hostMerges = await settle(crossNumber);
+  const crossing = repoCli([
+    'pr',
+    'mergeability',
+    String(crossNumber),
+  ]).mergeability;
+  const crossNote =
+    `forgejo_mergeable=${crossing.forgejo_mergeable} checks_pass=${crossing.checks_pass} ` +
+    `settled=${hostMerges} reasons=${JSON.stringify(crossing.reasons)}`;
+  ok(
+    'the host counts one Check as satisfying every glob construct',
+    hostMerges === true,
+    crossNote,
+  );
+  ok(
+    'required-context matching agrees with the host',
+    crossing.checks_pass === hostMerges,
+    crossNote,
+  );
+
   // ---- label reconcile, collisions and archived state ----------------------
   const reconcileLabel = 'live-reconcile';
-  const madeLabel = cli([
+  const madeLabel = repoCli([
     'label',
     'create',
-    '--repo',
-    REPO,
     reconcileLabel,
     '--color',
     '#ededed',
@@ -1049,11 +1267,9 @@ try {
   ]);
   if (madeLabel.created === true) created.labels.push(reconcileLabel);
   ok('label create opens a new label', madeLabel.created === true);
-  const sameLabel = cli([
+  const sameLabel = repoCli([
     'label',
     'create',
-    '--repo',
-    REPO,
     reconcileLabel,
     '--color',
     '#ededed',
@@ -1064,11 +1280,9 @@ try {
     'label create against the desired state is exit 0 and mutation-free',
     sameLabel.created === false && sameLabel.updated === false,
   );
-  const recolored = cli([
+  const recolored = repoCli([
     'label',
     'create',
-    '--repo',
-    REPO,
     reconcileLabel,
     '--color',
     '#00aabb',
@@ -1080,8 +1294,8 @@ try {
       recolored.label.color === '#00aabb',
     `color=${recolored.label?.color}`,
   );
-  const collided = cli(
-    ['label', 'edit', '--repo', REPO, reconcileLabel, '--name', 'live-bug'],
+  const collided = repoCli(
+    ['label', 'edit', reconcileLabel, '--name', 'live-bug'],
     { allowFail: true },
   );
   ok(
@@ -1103,8 +1317,8 @@ try {
       created.labelIds.push(made.data.id);
     }
   }
-  const ambiguous = cli(
-    ['label', 'edit', '--repo', REPO, 'live-duplicate', '--description', 'x'],
+  const ambiguous = repoCli(
+    ['label', 'edit', 'live-duplicate', '--description', 'x'],
     { allowFail: true },
   );
   ok(
@@ -1128,11 +1342,9 @@ try {
   await raw('PATCH', `repos/${REPO}/labels/${archived.data.id}`, {
     is_archived: true,
   });
-  const editedArchived = cli([
+  const editedArchived = repoCli([
     'label',
     'edit',
-    '--repo',
-    REPO,
     'live-archived',
     '--description',
     'still archived',
@@ -1209,7 +1421,7 @@ try {
   }
   for (const name of created.labels) {
     try {
-      cli(['label', 'delete', '--repo', REPO, name]);
+      repoCli(['label', 'delete', name]);
     } catch {
       /* best effort */
     }
@@ -1223,12 +1435,12 @@ try {
   // A leak here is the one the next run cannot clean up for itself, so it is
   // reported rather than swallowed the way the label teardown is.
   const leaked = [];
-  if (created.protection) {
+  for (const rule of created.protections) {
     const gone = await discard(
       'DELETE',
-      `repos/${REPO}/branch_protections/${created.protection}`,
+      `repos/${REPO}/branch_protections/${rule}`,
     );
-    if (gone.status !== 204) leaked.push(`protection ${created.protection}`);
+    if (gone.status !== 204) leaked.push(`protection ${rule}`);
   }
   for (const branch of created.branches) {
     const gone = await discard('DELETE', `repos/${REPO}/branches/${branch}`);
@@ -1239,6 +1451,7 @@ try {
   // run.
   for (const file of [
     `${BRANCH}-base.txt`,
+    `${BRANCH}-long.txt`,
     ...created.branches.map((branch) => `${branch}.txt`),
   ]) {
     const head = await discard('GET', `repos/${REPO}/contents/${file}`);

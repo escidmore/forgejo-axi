@@ -1,0 +1,25 @@
+# Run with `prek run` for the staged set, or `prek run --all-files` across the repository.
+# Install into .git/hooks once per clone with `prek install`; worktrees need their own
+# `npm ci`, because both hooks run this checkout's node_modules.
+repos:
+  - repo: local
+    hooks:
+      # Together these are `npm run lint`, the half of `npm run check` that reads
+      # files rather than running them, so it is the half worth paying for on every
+      # commit. Both invoke the binaries package-lock pins instead of `npx`, which
+      # resolves a newer release from the registry when node_modules is missing and
+      # then disagrees with CI about formatting. Neither rewrites a staged file;
+      # `npm run format` fixes what prettier reports.
+      - id: prettier
+        name: prettier --check
+        entry: node_modules/.bin/prettier --check
+        language: system
+        # No exclude list: prettier applies .prettierignore to explicit paths too,
+        # which keeps the generated skill out of both this hook and `npm run lint`.
+        files: \.(ts|mjs|cjs|js|json|md|ya?ml)$
+
+      - id: eslint
+        name: eslint
+        entry: node_modules/.bin/eslint
+        language: system
+        files: \.(ts|mjs|cjs|js)$

@@ -9,6 +9,7 @@
  * without Forgejo configuration in its environment. The shared npm cache is
  * the only thing outside that directory a run writes to.
  */
+import { ok as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
 import console from 'node:console';
 import {
@@ -64,10 +65,6 @@ function sh(command, args, options = {}) {
     );
   }
   return { stdout: result.stdout, stderr: result.stderr };
-}
-
-function assert(condition, message) {
-  if (!condition) throw new Error(message);
 }
 
 function step(name, run) {
