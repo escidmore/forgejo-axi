@@ -53,7 +53,7 @@ informative and never green either way.
 ## Run
 
 A single execution of an Actions workflow, grouping one or more Jobs. Exists as an
-API resource only where the runs capability is advertised (Forgejo 16+).
+API resource only where the runtime `runs` capability is advertised.
 
 ## Job
 
