@@ -14,7 +14,7 @@ document for its route. Capabilities are never inferred from version numbers.
 
 The status a command reports when the capability it needs is absent from the
 connected Forgejo. Unsupported is a distinct, successful outcome — not a failure
-and not an error. Example: Actions log routes on Forgejo 15.0.5.
+and not an error. Example: Actions run-jobs and job-log routes on Forgejo 15.0.5.
 
 ## Check
 
@@ -53,7 +53,7 @@ informative and never green either way.
 ## Run
 
 A single execution of an Actions workflow, grouping one or more Jobs. Exists as an
-API resource only where the runs capability is advertised (Forgejo 16+).
+API resource only where the runtime `runs` capability is advertised.
 
 ## Job
 
