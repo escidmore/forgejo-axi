@@ -14,7 +14,7 @@ document for its route. Capabilities are never inferred from version numbers.
 
 The status a command reports when the capability it needs is absent from the
 connected Forgejo. Unsupported is a distinct, successful outcome — not a failure
-and not an error. Example: Actions log routes on Forgejo 15.0.5.
+and not an error. Example: Actions run-jobs and job-log routes on Forgejo 15.0.5.
 
 ## Check
 
