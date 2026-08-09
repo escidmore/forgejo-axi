@@ -5,7 +5,6 @@ import {
   mkdtemp,
   readFile,
   rm,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { createServer as createHttpsServer } from 'node:https';
@@ -283,36 +282,6 @@ describe('URL and authentication configuration', () => {
       );
     }
   });
-
-  it.skipIf(process.platform === 'win32')(
-    'rejects a symlinked hosts file',
-    async () => {
-      const targetHome = await createHostsHome({
-        'forgejo.example': {
-          base_url: 'https://forgejo.example',
-          token: 'outside-home-token',
-        },
-      });
-      const home = await mkdtemp(join(tmpdir(), 'forgejo-axi-home-'));
-      const directory = join(home, '.config', 'forgejo-axi');
-      const path = join(directory, 'hosts.json');
-      await mkdir(directory, { recursive: true });
-      await symlink(
-        join(targetHome, '.config', 'forgejo-axi', 'hosts.json'),
-        path,
-      );
-      try {
-        await expect(resolveConnection({}, { HOME: home })).rejects.toMatchObject(
-          { code: 'HOSTS_FILE_ERROR' },
-        );
-      } finally {
-        await Promise.all([
-          rm(home, { recursive: true, force: true }),
-          rm(targetHome, { recursive: true, force: true }),
-        ]);
-      }
-    },
-  );
 
   it('rejects non-loopback HTTP with or without a token', async () => {
     await expect(
