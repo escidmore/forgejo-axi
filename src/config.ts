@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import { open, readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { join } from 'node:path';
@@ -239,9 +240,12 @@ async function readHostsFile(
   const path = join(home, '.config', 'forgejo-axi', 'hosts.json');
   let file;
   try {
-    file = await open(path, 'r');
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   } catch (error) {
     if (isErrno(error, 'ENOENT')) return undefined;
+    if (isErrno(error, 'ELOOP')) {
+      throw hostsFileError('Forgejo hosts file must not be a symlink');
+    }
     throw hostsFileError('Unable to open the Forgejo hosts file');
   }
 
