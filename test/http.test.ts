@@ -257,14 +257,23 @@ describe('URL and authentication configuration', () => {
       await expect(
         resolveConnection({}, { HOME: invalidJsonHome }),
       ).rejects.toMatchObject({ code: 'HOSTS_FILE_ERROR' });
-      let caught: unknown;
-      try {
-        await resolveConnection({}, { HOME: openHome });
-      } catch (error) {
-        caught = error;
+      if (process.platform === 'win32') {
+        await expect(
+          resolveConnection({}, { HOME: openHome }),
+        ).resolves.toMatchObject({
+          token: 'must-not-appear',
+          tokenSource: '~/.config/forgejo-axi/hosts.json',
+        });
+      } else {
+        let caught: unknown;
+        try {
+          await resolveConnection({}, { HOME: openHome });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toMatchObject({ code: 'HOSTS_FILE_ERROR' });
+        expect(JSON.stringify(caught)).not.toContain('must-not-appear');
       }
-      expect(caught).toMatchObject({ code: 'HOSTS_FILE_ERROR' });
-      expect(JSON.stringify(caught)).not.toContain('must-not-appear');
     } finally {
       await Promise.all(
         [invalidJsonHome, openHome].map((home) =>

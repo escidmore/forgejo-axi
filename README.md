@@ -65,7 +65,7 @@ chmod 600 "$HOME/.config/forgejo-axi/hosts.json"
 
 The top-level key is the URL host, including a non-default port. A single entry supplies the default base URL; select among multiple entries with `--base-url` or `FORGEJO_BASE_URL`. The file must be a regular file with mode `0600`.
 
-Tokens resolve from `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` when the base URL came from the environment or hosts file, then the matching hosts-file entry. Host keys hex-encode punctuation (`forgejo.example` becomes `FORGEJO_2E_EXAMPLE`) to prevent look-alike hosts from sharing credentials. Tokens are never accepted as values on the command line or emitted. `FORGEJO_TIMEOUT_MS` configures request timeouts; `FORGEJO_CA_FILE` supplies a replacement CA trust bundle rather than extending the platform store.
+Tokens resolve from `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` when the base URL came from `FORGEJO_BASE_URL`, then the matching hosts-file entry. Host keys hex-encode punctuation (`forgejo.example` becomes `FORGEJO_2E_EXAMPLE`) to prevent look-alike hosts from sharing credentials. Tokens are never accepted as values on the command line or emitted. `FORGEJO_TIMEOUT_MS` configures request timeouts; `FORGEJO_CA_FILE` supplies a replacement CA trust bundle rather than extending the platform store.
 
 ## Pull request lifecycle
 
