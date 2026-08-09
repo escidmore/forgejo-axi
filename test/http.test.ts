@@ -1,5 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createServer as createHttpsServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -106,6 +113,182 @@ describe('URL and authentication configuration', () => {
     }
   });
 
+  it('rejects explicitly empty base URLs before hosts-file fallback', async () => {
+    const home = await createHostsHome({
+      'forgejo.example': {
+        base_url: 'https://forgejo.example',
+        token: 'file-token',
+      },
+    });
+    try {
+      await expect(
+        resolveConnection({ baseUrl: '' }, { HOME: home }),
+      ).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
+        message: '--base-url must not be empty',
+      });
+      await expect(
+        resolveConnection({}, { HOME: home, FORGEJO_BASE_URL: '' }),
+      ).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
+        message: '--base-url is required when FORGEJO_BASE_URL is not set',
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves explicit, environment, then HOME-relative file credentials', async () => {
+    const home = await createHostsHome({
+      'file.example': {
+        base_url: 'https://file.example/forge',
+        token: 'file-token',
+      },
+    });
+    try {
+      await expect(
+        resolveConnection(
+          {
+            baseUrl: 'https://explicit.example',
+            tokenEnv: 'EXPLICIT_TOKEN',
+          },
+          {
+            HOME: home,
+            EXPLICIT_TOKEN: 'explicit-token',
+            FORGEJO_BASE_URL: 'https://environment.example',
+            FORGEJO_TOKEN: 'environment-token',
+          },
+        ),
+      ).resolves.toMatchObject({
+        token: 'explicit-token',
+        tokenSource: 'EXPLICIT_TOKEN',
+        source: 'flag',
+      });
+
+      await expect(
+        resolveConnection(
+          {},
+          {
+            HOME: home,
+            FORGEJO_BASE_URL: 'https://environment.example',
+            FORGEJO_TOKEN: 'environment-token',
+          },
+        ),
+      ).resolves.toMatchObject({
+        token: 'environment-token',
+        tokenSource: 'FORGEJO_TOKEN',
+        source: 'env',
+      });
+
+      const file = await resolveConnection(
+        {},
+        { HOME: home, FORGEJO_TOKEN: 'environment-token' },
+      );
+      expect(file.baseUrl.toString()).toBe('https://file.example/forge/');
+      expect(file).toMatchObject({
+        token: 'file-token',
+        tokenSource: '~/.config/forgejo-axi/hosts.json',
+        source: 'file',
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uses a matching file token with an explicit base URL', async () => {
+    const home = await createHostsHome({
+      'forgejo.example': {
+        base_url: 'https://forgejo.example/forge',
+        token: 'file-token',
+      },
+    });
+    try {
+      await expect(
+        resolveConnection(
+          { baseUrl: 'https://forgejo.example/other' },
+          { HOME: home },
+        ),
+      ).resolves.toMatchObject({ token: 'file-token', source: 'flag' });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves missing-file behavior and rejects missing or invalid entries', async () => {
+    const missingHome = await mkdtemp(join(tmpdir(), 'forgejo-axi-home-'));
+    const emptyHome = await createHostsHome({});
+    const invalidHome = await createHostsHome({
+      'forgejo.example': {
+        base_url: 'https://forgejo.example',
+        token: '',
+      },
+    });
+    try {
+      await expect(
+        resolveConnection(
+          { baseUrl: 'https://forgejo.example' },
+          {
+            HOME: missingHome,
+          },
+        ),
+      ).resolves.toMatchObject({ tokenSource: null });
+      for (const home of [missingHome, emptyHome]) {
+        await expect(
+          resolveConnection({}, { HOME: home }),
+        ).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      }
+      await expect(
+        resolveConnection({}, { HOME: invalidHome }),
+      ).rejects.toMatchObject({ code: 'HOSTS_FILE_ERROR' });
+    } finally {
+      await Promise.all(
+        [missingHome, emptyHome, invalidHome].map((home) =>
+          rm(home, { recursive: true, force: true }),
+        ),
+      );
+    }
+  });
+
+  it('rejects invalid JSON and credential files not protected by mode 0600', async () => {
+    const invalidJsonHome = await createHostsHome('{not-json');
+    const openHome = await createHostsHome({
+      'forgejo.example': {
+        base_url: 'https://forgejo.example',
+        token: 'must-not-appear',
+      },
+    });
+    const openPath = join(openHome, '.config', 'forgejo-axi', 'hosts.json');
+    await chmod(openPath, 0o644);
+    try {
+      await expect(
+        resolveConnection({}, { HOME: invalidJsonHome }),
+      ).rejects.toMatchObject({ code: 'HOSTS_FILE_ERROR' });
+      if (process.platform === 'win32') {
+        await expect(
+          resolveConnection({}, { HOME: openHome }),
+        ).resolves.toMatchObject({
+          token: 'must-not-appear',
+          tokenSource: '~/.config/forgejo-axi/hosts.json',
+        });
+      } else {
+        let caught: unknown;
+        try {
+          await resolveConnection({}, { HOME: openHome });
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toMatchObject({ code: 'HOSTS_FILE_ERROR' });
+        expect(JSON.stringify(caught)).not.toContain('must-not-appear');
+      }
+    } finally {
+      await Promise.all(
+        [invalidJsonHome, openHome].map((home) =>
+          rm(home, { recursive: true, force: true }),
+        ),
+      );
+    }
+  });
+
   it('rejects non-loopback HTTP with or without a token', async () => {
     await expect(
       resolveConnection(
@@ -134,6 +317,20 @@ describe('URL and authentication configuration', () => {
     }
   });
 });
+
+async function createHostsHome(contents: unknown): Promise<string> {
+  const home = await mkdtemp(join(tmpdir(), 'forgejo-axi-home-'));
+  const directory = join(home, '.config', 'forgejo-axi');
+  await mkdir(directory, { recursive: true });
+  const path = join(directory, 'hosts.json');
+  await writeFile(
+    path,
+    typeof contents === 'string' ? contents : JSON.stringify(contents),
+    { mode: 0o600 },
+  );
+  await chmod(path, 0o600);
+  return home;
+}
 
 describe('HTTP security behavior', () => {
   it('rejects a response whose body is truncated mid-stream', async () => {

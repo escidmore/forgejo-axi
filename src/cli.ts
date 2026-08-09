@@ -12,7 +12,7 @@ import {
   type ParsedArgs,
 } from './args.js';
 import { resolveConnection } from './config.js';
-import { asForgejoError, usageError } from './errors.js';
+import { asForgejoError, ForgejoAxiError, usageError } from './errors.js';
 import {
   ForgejoService,
   normalizeLabelColor,
@@ -135,17 +135,28 @@ const COMMAND_HELP: Record<string, string | undefined> = {
 async function homeOutput(
   env: NodeJS.ProcessEnv,
 ): Promise<Record<string, unknown>> {
-  if (!env['FORGEJO_BASE_URL']) {
+  let connection;
+  try {
+    connection = await resolveConnection({}, env);
+  } catch (error) {
+    if (!(
+      error instanceof ForgejoAxiError &&
+      error.code === 'VALIDATION_ERROR' &&
+      error.message ===
+        '--base-url is required when FORGEJO_BASE_URL is not set'
+    )) {
+      throw error;
+    }
     return {
       configured: false,
       next: [
-        'Set FORGEJO_BASE_URL and a host-scoped FORGEJO_TOKEN_<HOST_KEY>',
+        'Configure ~/.config/forgejo-axi/hosts.json or set FORGEJO_BASE_URL and a host-scoped FORGEJO_TOKEN_<HOST_KEY>',
         'forgejo-axi status --base-url https://forgejo.example',
         'forgejo-axi --help',
       ],
     };
   }
-  const service = new ForgejoService(await resolveConnection({}, env));
+  const service = new ForgejoService(connection);
   return {
     configured: true,
     ...(await service.status()),

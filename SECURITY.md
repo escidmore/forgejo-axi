@@ -19,9 +19,11 @@ name and any token before sending.
 This CLI holds Forgejo API credentials and talks to self-hosted forges, so the
 protections most worth reporting against are:
 
-- **Token disclosure.** Tokens are read only from environment variables and are
-  never accepted as arguments or emitted in output, including in errors and
-  diagnostics. A path that prints or logs a token is a vulnerability.
+- **Token disclosure.** Token configuration and handling are defined in the
+  [configuration contract](docs/contract.md#invocation-and-configuration):
+  tokens may come from environment variables or the `HOME`-relative hosts file,
+  but are never accepted as command-line values or emitted in output, including
+  errors and diagnostics. A path that prints or logs a token is a vulnerability.
 - **Token scope crossing.** Host keys hex-encode punctuation so that
   `forgejo.example` resolves to `FORGEJO_TOKEN_FORGEJO_2E_EXAMPLE` and cannot
   collide with a look-alike host. A case where one host's token reaches another

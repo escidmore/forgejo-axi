@@ -20,3 +20,10 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 - Posting a comment on a Linear issue is pre-approved when a finding materially affects that issue — a result that invalidates its premise, answers a question it left open, or makes a follow-up it proposed unnecessary belongs on the issue, not only in the pull request that found it. Say what changed and what it means for the issue, not just that work happened.
 - Changing an issue's state to "In Progress" when beginning work on an issue is also pre-approved
 - Otherwise creating, closing, or restating the state of an issue still needs approval.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

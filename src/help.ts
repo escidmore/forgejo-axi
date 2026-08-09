@@ -19,7 +19,7 @@ Usage:
   forgejo-axi run <list|view|cancel|download> ...
 
 Connection flags:
-  --base-url URL     Forgejo root URL; defaults to FORGEJO_BASE_URL
+  --base-url URL     Forgejo root URL; defaults to environment or hosts.json
   --token-env NAME   Read the token from this environment variable
   --timeout-ms N     Request timeout; default 15000
   --ca-file PATH     Replacement CA trust bundle file
