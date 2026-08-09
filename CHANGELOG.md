@@ -6,6 +6,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) as scoped by
 [`docs/contract.md`](docs/contract.md): command names, field meanings, enum
 values, and exit semantics change only in a major release.
 
+## [1.1.0] - 2026-08-09
+
+### Added
+
+- HOME-relative host credentials from `~/.config/forgejo-axi/hosts.json` for
+  daemon-compatible authentication without environment variables.
+- Matched `base_url` and `token` resolution with explicit token precedence and
+  symlink-compatible Home Manager configuration paths.
+
 ## [1.0.0] - 2026-08-03
 
 First public release.
@@ -30,4 +39,5 @@ First public release.
 - An Agent Skill at `skills/forgejo-axi/SKILL.md`, generated from the CLI's own
   help text and byte-checked against its sources.
 
+[1.1.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.1.0
 [1.0.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.0.0
