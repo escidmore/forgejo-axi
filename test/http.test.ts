@@ -113,7 +113,7 @@ describe('URL and authentication configuration', () => {
     }
   });
 
-  it('rejects an explicitly empty base URL before hosts-file fallback', async () => {
+  it('rejects explicitly empty base URLs before hosts-file fallback', async () => {
     const home = await createHostsHome({
       'forgejo.example': {
         base_url: 'https://forgejo.example',
@@ -126,6 +126,12 @@ describe('URL and authentication configuration', () => {
       ).rejects.toMatchObject({
         code: 'VALIDATION_ERROR',
         message: '--base-url must not be empty',
+      });
+      await expect(
+        resolveConnection({}, { HOME: home, FORGEJO_BASE_URL: '' }),
+      ).rejects.toMatchObject({
+        code: 'VALIDATION_ERROR',
+        message: '--base-url is required when FORGEJO_BASE_URL is not set',
       });
     } finally {
       await rm(home, { recursive: true, force: true });

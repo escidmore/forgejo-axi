@@ -40,12 +40,14 @@ export async function resolveConnection(
   let rawBase = input.baseUrl ?? env['FORGEJO_BASE_URL'];
   let source: ConnectionConfig['source'] =
     input.baseUrl !== undefined ? 'flag' : 'env';
+  const hasEmptyEnvironmentBase =
+    input.baseUrl === undefined && env['FORGEJO_BASE_URL'] === '';
   if (input.baseUrl === '') {
     throw usageError('--base-url must not be empty', [
       'Pass `--base-url https://forgejo.example` or set FORGEJO_BASE_URL',
     ]);
   }
-  if (!rawBase) {
+  if (!rawBase && !hasEmptyEnvironmentBase) {
     hosts = await readHostsFile(env);
     const entries = Object.values(hosts ?? {});
     if (entries.length === 1) {
