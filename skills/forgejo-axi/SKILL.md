@@ -61,7 +61,7 @@ between invocations.
 | `FORGEJO_BASE_URL` | Forgejo root URL, including any path prefix |
 | `FORGEJO_REPOSITORY` | Default `OWNER/REPO`, used when `--repo` is omitted |
 | `FORGEJO_TOKEN_<HOST_KEY>` | Host-scoped API token |
-| `FORGEJO_TOKEN` | Token honoured when the base URL came from the environment or hosts file |
+| `FORGEJO_TOKEN` | Token honoured only when the base URL came from `FORGEJO_BASE_URL` |
 | `FORGEJO_TIMEOUT_MS` | Request timeout in milliseconds |
 | `FORGEJO_CA_FILE` | Replacement CA trust bundle, not an addition to the platform store |
 
@@ -82,8 +82,8 @@ hosts cannot share a credential.
 - Tokens are read from environment variables or the hosts file. They are never
   accepted as argument values and never emitted, including in error output.
 - Resolution order is `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then
-  `FORGEJO_TOKEN` when the base URL came from the environment or hosts file,
-  then the matching hosts-file entry.
+  `FORGEJO_TOKEN` when the base URL came from `FORGEJO_BASE_URL`, then the
+  matching hosts-file entry.
 - A variable named by `--token-env` that is unset or empty is a usage error
   rather than a silent anonymous request.
 - Pass the variable's name, never its value. Do not write a token into a command

@@ -222,7 +222,7 @@ function resolveToken(
   }
   const names = [
     `FORGEJO_TOKEN_${hostKey(baseUrl)}`,
-    ...(baseSource === 'env' || baseSource === 'file' ? ['FORGEJO_TOKEN'] : []),
+    ...(baseSource === 'env' ? ['FORGEJO_TOKEN'] : []),
   ];
   for (const name of names) {
     const value = env[name];

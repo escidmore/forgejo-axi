@@ -174,7 +174,10 @@ describe('URL and authentication configuration', () => {
         source: 'env',
       });
 
-      const file = await resolveConnection({}, { HOME: home });
+      const file = await resolveConnection(
+        {},
+        { HOME: home, FORGEJO_TOKEN: 'environment-token' },
+      );
       expect(file.baseUrl.toString()).toBe('https://file.example/forge/');
       expect(file).toMatchObject({
         token: 'file-token',
