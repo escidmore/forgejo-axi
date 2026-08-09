@@ -46,7 +46,25 @@ export FORGEJO_TOKEN_FORGEJO_2E_EXAMPLE=...
 forgejo-axi status
 ```
 
-Tokens are read only from environment variables: `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` only when the base URL came from `FORGEJO_BASE_URL`. Host keys hex-encode punctuation (`forgejo.example` becomes `FORGEJO_2E_EXAMPLE`) to prevent look-alike hosts from sharing credentials. Tokens are never accepted as arguments or emitted. `FORGEJO_TIMEOUT_MS` configures request timeouts; `FORGEJO_CA_FILE` supplies a replacement CA trust bundle rather than extending the platform store.
+For unattended processes that inherit `HOME` but not shell variables, configure a host in `~/.config/forgejo-axi/hosts.json`:
+
+```console
+install -d -m 700 "$HOME/.config/forgejo-axi"
+install -m 600 /dev/null "$HOME/.config/forgejo-axi/hosts.json"
+```
+
+```json
+{
+  "forgejo.example": {
+    "base_url": "https://forgejo.example/git",
+    "token": "..."
+  }
+}
+```
+
+The top-level key is the URL host, including a non-default port. A single entry supplies the default base URL; select among multiple entries with `--base-url` or `FORGEJO_BASE_URL`. The file must be a regular file with mode `0600`.
+
+Tokens resolve from `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `FORGEJO_TOKEN` when the base URL came from the environment or hosts file, then the matching hosts-file entry. Host keys hex-encode punctuation (`forgejo.example` becomes `FORGEJO_2E_EXAMPLE`) to prevent look-alike hosts from sharing credentials. Tokens are never accepted as values on the command line or emitted. `FORGEJO_TIMEOUT_MS` configures request timeouts; `FORGEJO_CA_FILE` supplies a replacement CA trust bundle rather than extending the platform store.
 
 ## Pull request lifecycle
 

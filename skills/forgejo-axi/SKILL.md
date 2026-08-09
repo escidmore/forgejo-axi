@@ -52,8 +52,9 @@ forgejo-axi --version
 
 ## Configure
 
-Configuration is environment-only. No configuration file is read or written and
-nothing is cached between invocations.
+Configuration comes from explicit flags, environment variables, or
+`~/.config/forgejo-axi/hosts.json`, resolved from `HOME`. Nothing is cached
+between invocations.
 
 | Variable | Purpose |
 | --- | --- |
@@ -64,6 +65,12 @@ nothing is cached between invocations.
 | `FORGEJO_TIMEOUT_MS` | Request timeout in milliseconds |
 | `FORGEJO_CA_FILE` | Replacement CA trust bundle, not an addition to the platform store |
 
+For unattended processes that inherit `HOME` but not shell variables, the
+hosts file uses URL hosts as top-level keys. Every entry contains `base_url`
+and `token`; one entry supplies the default base URL, while multiple entries
+require `--base-url` or `FORGEJO_BASE_URL` to select one. The file must be a
+regular file with mode `0600`.
+
 `HOST_KEY` is the uppercase URL host, including a non-default port, with every
 non-alphanumeric ASCII character encoded as `_HH_` from its hexadecimal code
 point. `forgejo.example` becomes `FORGEJO_2E_EXAMPLE` and
@@ -72,11 +79,11 @@ hosts cannot share a credential.
 
 ## Token rules
 
-- Tokens are read from environment variables only. They are never accepted as
-  arguments, never persisted, and never emitted, including in error output.
+- Tokens are read from environment variables or the hosts file. They are never
+  accepted as argument values and never emitted, including in error output.
 - Resolution order is `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then
-  `FORGEJO_TOKEN` — the last only when the base URL came from
-  `FORGEJO_BASE_URL`.
+  `FORGEJO_TOKEN` when the base URL came from the environment or hosts file,
+  then the matching hosts-file entry.
 - A variable named by `--token-env` that is unset or empty is a usage error
   rather than a silent anonymous request.
 - Pass the variable's name, never its value. Do not write a token into a command
@@ -124,7 +131,7 @@ Usage:
   forgejo-axi run <list|view|cancel|download> ...
 
 Connection flags:
-  --base-url URL     Forgejo root URL; defaults to FORGEJO_BASE_URL
+  --base-url URL     Forgejo root URL; defaults to environment or hosts.json
   --token-env NAME   Read the token from this environment variable
   --timeout-ms N     Request timeout; default 15000
   --ca-file PATH     Replacement CA trust bundle file

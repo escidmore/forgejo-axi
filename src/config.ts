@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
+import { join } from 'node:path';
 import { positiveInteger } from './args.js';
 import { usageError, ForgejoAxiError } from './errors.js';
 
@@ -16,9 +17,16 @@ export interface ConnectionConfig {
   token?: string;
   timeoutMs: number;
   ca?: Buffer;
-  source: 'flag' | 'env';
+  source: 'flag' | 'env' | 'file';
   tokenSource: string | null;
 }
+
+interface HostsFileEntry {
+  baseUrl: URL;
+  token: string;
+}
+
+type HostsFile = Record<string, HostsFileEntry>;
 
 const ENCODED_PATH_HAZARD = /%(?:2e|2f|5c)/i;
 const TRUSTED_ENCODED_PATH_HAZARD = /%(?:2e|5c)/i;
@@ -28,14 +36,30 @@ export async function resolveConnection(
   input: ConnectionInput,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ConnectionConfig> {
-  const rawBase = input.baseUrl ?? env['FORGEJO_BASE_URL'];
+  let hosts: HostsFile | undefined;
+  let rawBase = input.baseUrl ?? env['FORGEJO_BASE_URL'];
+  let source: ConnectionConfig['source'] = input.baseUrl ? 'flag' : 'env';
+  if (!rawBase) {
+    hosts = await readHostsFile(env);
+    const entries = Object.values(hosts ?? {});
+    if (entries.length === 1) {
+      rawBase = entries[0]?.baseUrl.toString();
+      source = 'file';
+    } else if (entries.length > 1) {
+      throw usageError(
+        '--base-url is required when the Forgejo hosts file has multiple entries',
+        ['Pass `--base-url https://forgejo.example` or set FORGEJO_BASE_URL'],
+      );
+    }
+  }
   if (!rawBase) {
     throw usageError(
       '--base-url is required when FORGEJO_BASE_URL is not set',
-      ['Set FORGEJO_BASE_URL or pass `--base-url https://forgejo.example`'],
+      [
+        'Set FORGEJO_BASE_URL, configure ~/.config/forgejo-axi/hosts.json, or pass `--base-url https://forgejo.example`',
+      ],
     );
   }
-  const source = input.baseUrl ? 'flag' : 'env';
   const baseUrl = canonicalizeBaseUrl(rawBase);
   // Every answer an agent acts on — merge proofs, check states, mergeability —
   // is forgeable on a plaintext hop whether or not there is a credential to
@@ -69,7 +93,17 @@ export async function resolveConnection(
     }
   }
 
-  const tokenResolution = resolveToken(baseUrl, source, input.tokenEnv, env);
+  let tokenResolution = resolveToken(baseUrl, source, input.tokenEnv, env);
+  if (!tokenResolution.token) {
+    hosts ??= await readHostsFile(env);
+    const entry = hosts?.[baseUrl.host];
+    if (entry) {
+      tokenResolution = {
+        token: entry.token,
+        source: '~/.config/forgejo-axi/hosts.json',
+      };
+    }
+  }
 
   const config: ConnectionConfig = {
     baseUrl,
@@ -161,7 +195,7 @@ export function hostKey(url: URL): string {
 
 function resolveToken(
   baseUrl: URL,
-  baseSource: 'flag' | 'env',
+  baseSource: ConnectionConfig['source'],
   explicitName: string | undefined,
   env: NodeJS.ProcessEnv,
 ): { token?: string; source: string | null } {
@@ -182,13 +216,106 @@ function resolveToken(
   }
   const names = [
     `FORGEJO_TOKEN_${hostKey(baseUrl)}`,
-    ...(baseSource === 'env' ? ['FORGEJO_TOKEN'] : []),
+    ...(baseSource === 'env' || baseSource === 'file' ? ['FORGEJO_TOKEN'] : []),
   ];
   for (const name of names) {
     const value = env[name];
     if (value) return { token: value, source: name };
   }
   return { source: null };
+}
+
+async function readHostsFile(
+  env: NodeJS.ProcessEnv,
+): Promise<HostsFile | undefined> {
+  const home = env['HOME'];
+  if (!home) return undefined;
+  const path = join(home, '.config', 'forgejo-axi', 'hosts.json');
+  let file;
+  try {
+    file = await open(path, 'r');
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return undefined;
+    throw hostsFileError('Unable to open the Forgejo hosts file');
+  }
+
+  try {
+    const stat = await file.stat();
+    if (
+      !stat.isFile() ||
+      (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600)
+    ) {
+      throw hostsFileError(
+        'Forgejo hosts file must be a regular mode 0600 file',
+      );
+    }
+    let contents: string;
+    try {
+      contents = await file.readFile('utf8');
+    } catch {
+      throw hostsFileError('Unable to read the Forgejo hosts file');
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(contents);
+    } catch {
+      throw hostsFileError('Forgejo hosts file is not valid JSON');
+    }
+    return validateHostsFile(parsed);
+  } finally {
+    await file.close();
+  }
+}
+
+function validateHostsFile(value: unknown): HostsFile {
+  if (!isRecord(value)) throw hostsFileError('Forgejo hosts file is invalid');
+  const hosts = Object.create(null) as HostsFile;
+  for (const [host, valueEntry] of Object.entries(value)) {
+    if (!isRecord(valueEntry))
+      throw hostsFileError('Forgejo hosts file contains an invalid entry');
+    const rawBaseUrl = valueEntry['base_url'];
+    const token = valueEntry['token'];
+    if (
+      typeof rawBaseUrl !== 'string' ||
+      !rawBaseUrl ||
+      typeof token !== 'string' ||
+      !token
+    ) {
+      throw hostsFileError('Forgejo hosts file contains an invalid entry');
+    }
+    let baseUrl: URL;
+    try {
+      baseUrl = canonicalizeBaseUrl(rawBaseUrl);
+    } catch {
+      throw hostsFileError('Forgejo hosts file contains an invalid entry');
+    }
+    if (baseUrl.host !== host)
+      throw hostsFileError('Forgejo hosts file contains an invalid entry');
+    hosts[host] = { baseUrl, token };
+  }
+  return hosts;
+}
+
+function hostsFileError(message: string): ForgejoAxiError {
+  return new ForgejoAxiError(message, 'HOSTS_FILE_ERROR', {
+    usage: true,
+    suggestions: [
+      'Use host keys with matching non-empty base_url and token values in ~/.config/forgejo-axi/hosts.json',
+      'Set the file mode with `chmod 600 ~/.config/forgejo-axi/hosts.json`',
+    ],
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }
 
 function isLoopbackHostname(hostname: string): boolean {
