@@ -50,7 +50,8 @@ For unattended processes that inherit `HOME` but not shell variables, configure 
 
 ```console
 install -d -m 700 "$HOME/.config/forgejo-axi"
-install -m 600 /dev/null "$HOME/.config/forgejo-axi/hosts.json"
+touch "$HOME/.config/forgejo-axi/hosts.json"
+chmod 600 "$HOME/.config/forgejo-axi/hosts.json"
 ```
 
 ```json
