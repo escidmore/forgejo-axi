@@ -382,7 +382,7 @@ describe('normalized checks', () => {
     });
   });
 
-  it('uses only the newest status for a repeated context', async () => {
+  it('uses status ids to break repeated-context timestamp ties', async () => {
     const data = await fixture();
     const server = await startServer((_request, response, recorded) => {
       const path = new URL(recorded.url, 'http://fake').pathname;
@@ -391,11 +391,19 @@ describe('normalized checks', () => {
         return json(response, 200, [
           {
             context: 'ci',
+            id: 27,
+            status: 'pending',
+            updated_at: '2026-01-02T00:00:00Z',
+          },
+          {
+            context: 'ci',
+            id: 28,
             status: 'success',
             updated_at: '2026-01-02T00:00:00Z',
           },
           {
             context: 'ci',
+            id: 29,
             status: 'failure',
             updated_at: '2026-01-01T00:00:00Z',
           },
