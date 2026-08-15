@@ -6,7 +6,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) as scoped by
 [`docs/contract.md`](docs/contract.md): command names, field meanings, enum
 values, and exit semantics change only in a major release.
 
-## [1.1.0] - 2026-08-09
+## [1.1.0] - 2026-08-15
 
 ### Added
 
@@ -14,6 +14,11 @@ values, and exit semantics change only in a major release.
   daemon-compatible authentication without environment variables.
 - Matched `base_url` and `token` resolution with explicit token precedence and
   symlink-compatible Home Manager configuration paths.
+
+### Fixed
+
+- Status history now uses status IDs to break equal-timestamp ties, preventing
+  a completed check from being reported as pending.
 
 ## [1.0.0] - 2026-08-03
 
