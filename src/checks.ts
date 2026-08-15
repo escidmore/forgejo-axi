@@ -319,7 +319,11 @@ function isNewerStatus(
 ): boolean {
   const candidateTime = Date.parse(candidate.updated_at ?? '');
   const previousTime = Date.parse(previous.updated_at ?? '');
-  if (Number.isFinite(candidateTime) && Number.isFinite(previousTime)) {
+  if (
+    Number.isFinite(candidateTime) &&
+    Number.isFinite(previousTime) &&
+    candidateTime !== previousTime
+  ) {
     return candidateTime > previousTime;
   }
   if (candidate.id !== undefined && previous.id !== undefined) {
