@@ -277,6 +277,30 @@ describe('content history', () => {
     );
   });
 
+  // Markup as Forgejo 16.0.2 actually emits it: single-quoted class attributes,
+  // a `chroma` class on the wrapper, and an edit that only inserts — the case
+  // above quotes its attributes the other way and always carries both sides.
+  it("reconstructs a real host's insertion-only diff", async () => {
+    const server = await historyServer({
+      diff:
+        "<pre class='chroma'>native issue dependencies" +
+        "<span class='gi'> (ticket bodies also note their blockers)</span>" +
+        '; Forgejo&#39;s own wording</pre>',
+    });
+    const result = await invoke(
+      historyArgs(server, 'detail', '7', ['--history-id', '249']),
+      { HISTORY_TOKEN: 'secret-token' },
+    );
+    expect(parseJson(result.output)).toMatchObject({
+      revision: {
+        before: "native issue dependencies; Forgejo's own wording",
+        after:
+          'native issue dependencies (ticket bodies also note their blockers)' +
+          "; Forgejo's own wording",
+      },
+    });
+  });
+
   it("normalizes Forgejo's zero previous-history sentinel to null", async () => {
     const server = await historyServer({ previousHistoryId: 0 });
     const result = await invoke(
