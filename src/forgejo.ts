@@ -1484,15 +1484,9 @@ export class ForgejoService {
       const overview = await this.contentHistoryOverview(repo, number);
       return overview.total > 0 ? overview.total : null;
     } catch (error) {
-      // History is an optional view adornment. Older Forgejo versions and
-      // an absent route must not hide the issue or pull request; real
-      // authorization and transport failures still need to reach the caller.
-      if (
-        error instanceof ForgejoAxiError &&
-        (error.code === 'CONTENT_HISTORY_UNSUPPORTED' ||
-          error.code === 'CONTENT_HISTORY_INVALID_RESPONSE')
-      )
-        return null;
+      // History is an optional view adornment: no history failure may hide the
+      // issue or pull request the caller actually asked for.
+      if (error instanceof ForgejoAxiError) return null;
       throw error;
     }
   }
@@ -1847,6 +1841,13 @@ function translateContentHistoryError(
   if (!(error instanceof ForgejoAxiError)) {
     throw error;
   }
+  if (
+    error.code !== 'NOT_FOUND' &&
+    error.code !== 'AUTH_REQUIRED' &&
+    error.code !== 'FORBIDDEN' &&
+    error.code !== 'API_ERROR'
+  )
+    return error;
   const code =
     error.code === 'NOT_FOUND'
       ? operation === 'overview'
@@ -1883,10 +1884,10 @@ function reconstructHistoryDiff(diffHtml: string): {
 }
 
 function decodeHistoryHtml(html: string): string {
-  return collectHistorySide(html, '__none__');
+  return collectHistorySide(html, null);
 }
 
-function collectHistorySide(html: string, omittedClass: string): string {
+function collectHistorySide(html: string, omittedClass: string | null): string {
   const stack: Array<{ tag: string; omitted: boolean }> = [];
   const output: string[] = [];
   const voidTags = new Set([
@@ -1941,7 +1942,8 @@ function collectHistorySide(html: string, omittedClass: string): string {
     if (!tag) throw new Error('Malformed HTML tag');
     const parentOmitted = stack.some((item) => item.omitted);
     const omitted =
-      parentOmitted || historyClasses(rawTag).includes(omittedClass);
+      parentOmitted ||
+      (omittedClass !== null && historyClasses(rawTag).includes(omittedClass));
     if (tag.toLowerCase() === 'br' && !omitted) output.push('\n');
     const selfClosing =
       /\/\s*$/.test(rawTag) || voidTags.has(tag.toLowerCase());

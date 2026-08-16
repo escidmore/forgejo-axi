@@ -192,15 +192,42 @@ describe('content history', () => {
     });
   });
 
-  it('does not hide history authorization failures during view enrichment', async () => {
+  it('keeps a view working when history enrichment is refused', async () => {
     const server = await historyServer({ status: 403 });
     const result = await invoke(viewArgs(server, 'issue', '7'), {
       HISTORY_TOKEN: 'secret-token',
     });
-    expect(result.exitCode).not.toBeUndefined();
-    expect(parseJson(result.output)).toMatchObject({
+    expect(result.exitCode).toBeUndefined();
+    const output = parseJson<{ issue: Record<string, unknown> }>(result.output);
+    expect(output.issue).toMatchObject({ number: 7 });
+    expect(output.issue).not.toHaveProperty('edit_history_count');
+    expect(output).not.toHaveProperty('next');
+
+    const asked = await invoke(historyArgs(server, 'overview'), {
+      HISTORY_TOKEN: 'secret-token',
+    });
+    expect(asked.exitCode).not.toBeUndefined();
+    expect(parseJson(asked.output)).toMatchObject({
       code: 'CONTENT_HISTORY_AUTHORIZATION',
     });
+  });
+
+  it('reports transport failures as themselves', async () => {
+    const server = await historyServer({ status: 429 });
+    const result = await invoke(historyArgs(server, 'list'), {
+      HISTORY_TOKEN: 'secret-token',
+    });
+    expect(result.exitCode).not.toBeUndefined();
+    expect(parseJson(result.output)).toMatchObject({ code: 'RATE_LIMITED' });
+
+    const view = await invoke(viewArgs(server, 'pr', '86'), {
+      HISTORY_TOKEN: 'secret-token',
+    });
+    expect(view.exitCode).toBeUndefined();
+    expect(
+      parseJson<{ pull_request: Record<string, unknown> }>(view.output)
+        .pull_request,
+    ).not.toHaveProperty('edit_history_count');
   });
 
   it('omits view history enrichment when the overview is empty', async () => {
