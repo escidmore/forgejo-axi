@@ -6,7 +6,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) as scoped by
 [`docs/contract.md`](docs/contract.md): command names, field meanings, enum
 values, and exit semantics change only in a major release.
 
-## [Unreleased]
+## [1.2.0] - 2026-08-16
 
 ### Added
 
@@ -62,5 +62,6 @@ First public release.
   help text and byte-checked against its sources.
 
 [unreleased]: https://github.com/escidmore/forgejo-axi/compare/v1.1.0...HEAD
+[1.2.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.2.0
 [1.1.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.1.0
 [1.0.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.0.0
