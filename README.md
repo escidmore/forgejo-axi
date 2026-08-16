@@ -74,6 +74,8 @@ forgejo-axi repo view --repo owner/repo
 forgejo-axi pr find --repo owner/repo --head feature --base main
 forgejo-axi pr list --repo owner/repo --fields number,title,state,head
 forgejo-axi pr view --repo owner/repo 42 --full
+forgejo-axi pr history list --repo owner/repo 42
+forgejo-axi pr history detail --repo owner/repo 42 --history-id 249
 forgejo-axi pr reviews --repo owner/repo 42 --full
 forgejo-axi pr diff --repo owner/repo 42
 forgejo-axi pr create --repo owner/repo --title 'Add feature' --head feature --base main
@@ -88,6 +90,8 @@ forgejo-axi pr merged --repo owner/repo 42
 `pr create` and `pr update` reconcile existing state instead of duplicating mutations. Use either `--body` or `--body-file PATH|-`; file and stdin bodies are forwarded verbatim. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
 
 `pr reviews` and `pr diff` are read-only. Reviews come back with their verdicts and the inline comments anchored to the file and position each one marks, and the diff is the one the forge generates, so no pull ref has to be fetched. Submitting, dismissing, and deleting reviews stay on the `api` path.
+
+`pr history` and `issue history` read Forgejo's content-history records from the web root, not the raw API. The default operation is `list` and the default `--comment-id 0` addresses the description/body; pass a comment id to inspect a comment's history. `detail` returns reconstructed `before` and `after` text and keeps raw diff HTML out unless `--raw` is explicit. `soft-delete` is never interactive and requires `--yes`; it checks Forgejo's `canSoftDelete` permission first and reports already-deleted revisions as idempotent no-ops.
 
 Lists fetch up to 100 Forgejo pages of 50 rows (5000 rows) and report completeness in `page_info`. TOON displays 30 rows by default and hints at `--full` when truncated; JSON displays every fetched row, and `--limit` is rejected with `--json`. Pull request lists use four fields by default and accept `--fields LIST|all`.
 
@@ -107,6 +111,8 @@ Labels are addressed by name; the numeric id is resolved for you. An unknown nam
 ```bash
 forgejo-axi issue list --repo owner/repo --label bug --state open
 forgejo-axi issue view --repo owner/repo 7 --full
+forgejo-axi issue history overview --repo owner/repo 7
+forgejo-axi issue history list --repo owner/repo 7 --comment-id 17
 forgejo-axi issue create --repo owner/repo --title 'Race in scheduler' --label bug --milestone v1.0
 forgejo-axi issue edit --repo owner/repo 7 --label bug,triage --assignee robot
 forgejo-axi issue comment --repo owner/repo 7 --body 'Reproduced on 15.0.5'

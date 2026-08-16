@@ -287,6 +287,7 @@ function dispatch(
 const runPull = dispatch('pr', {
   find: pullFind,
   list: pullList,
+  history: (args, env) => contentHistoryRead('pr', args, env),
   reviews: pullReviews,
   diff: pullDiff,
   view: (args, env) => pullRead('view', args, env),
@@ -382,12 +383,17 @@ async function pullRead(
   const repo = resolveRepo(parsed, env);
   const service = await serviceFor(parsed, env);
   if (command === 'view') {
+    const pullRequest = await service.viewPull(
+      repo,
+      number,
+      boolFlag(parsed, '--full'),
+    );
     return {
-      pull_request: await service.viewPull(
-        repo,
-        number,
-        boolFlag(parsed, '--full'),
-      ),
+      pull_request: pullRequest,
+      ...(typeof pullRequest.edit_history_count === 'number' &&
+      pullRequest.edit_history_count > 0
+        ? { next: [historyHint('pr', repo, number)] }
+        : {}),
     };
   }
   if (command === 'checks')
@@ -724,6 +730,7 @@ function labelInput(parsed: ParsedArgs): LabelInput {
 const runIssue = dispatch('issue', {
   list: issueList,
   view: issueView,
+  history: (args, env) => contentHistoryRead('issue', args, env),
   create: issueCreate,
   edit: issueEdit,
   close: (args, env) => issueSetState(args, env, 'closed'),
@@ -796,6 +803,14 @@ async function issueView(
     ? comments
     : comments.slice(0, displayLimit(undefined));
   const hidden = comments.length - displayed.length;
+  const issueHistoryCount = (issue as Record<string, unknown>)[
+    'edit_history_count'
+  ];
+  const next: string[] = [];
+  if (hidden > 0) next.push('Rerun with --full to display every comment');
+  if (typeof issueHistoryCount === 'number' && issueHistoryCount > 0) {
+    next.push(historyHint('issue', repo, number));
+  }
   return {
     issue,
     comments: displayed,
@@ -804,10 +819,108 @@ async function issueView(
       displayed: displayed.length,
       truncated: hidden > 0,
     },
-    ...(hidden > 0
-      ? { next: ['Rerun with --full to display every comment'] }
-      : {}),
+    ...(next.length > 0 ? { next } : {}),
   };
+}
+
+async function contentHistoryRead(
+  family: 'issue' | 'pr',
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const operation = ['overview', 'list', 'detail', 'soft-delete'].includes(
+    args[0] ?? '',
+  )
+    ? args[0]
+    : 'list';
+  const rest = operation === args[0] ? args.slice(1) : args;
+  const command = `${family} history ${operation}`;
+  const parsed = parseArgs(
+    rest,
+    withFlags({
+      '--repo': 'value',
+      '--comment-id': 'value',
+      '--history-id': 'value',
+      '--raw': 'boolean',
+      '--yes': 'boolean',
+    }),
+    command,
+  );
+  const commentIdRaw = stringFlag(parsed, '--comment-id');
+  const commentId =
+    commentIdRaw === undefined
+      ? 0
+      : nonNegativeInteger(commentIdRaw, '--comment-id');
+  const historyIdRaw = stringFlag(parsed, '--history-id');
+  const historyId =
+    historyIdRaw === undefined
+      ? undefined
+      : positiveInteger(historyIdRaw, '--history-id');
+  const raw = boolFlag(parsed, '--raw');
+  const yes = boolFlag(parsed, '--yes');
+  if (operation === 'overview' && (commentIdRaw !== undefined || historyIdRaw))
+    throw usageError('overview does not accept --comment-id or --history-id');
+  if (operation === 'list' && historyIdRaw !== undefined)
+    throw usageError('list does not accept --history-id');
+  if (operation !== 'detail' && raw)
+    throw usageError('--raw requires the detail operation');
+  if (operation !== 'soft-delete' && yes)
+    throw usageError('--yes requires the soft-delete operation');
+  if (operation === 'soft-delete' && !yes)
+    throw usageError('soft-delete requires --yes; no prompt is shown');
+  if (operation === 'detail' && historyId === undefined)
+    throw usageError('--history-id is required for detail');
+  if (operation === 'soft-delete' && historyId === undefined)
+    throw usageError('--history-id is required for soft-delete');
+
+  const number =
+    family === 'pr'
+      ? parsePullNumber(requireOnePositional(parsed, 'pull request number'))
+      : parseIssueNumber(requireOnePositional(parsed, 'issue number'));
+  const repo = resolveRepo(parsed, env);
+  const service = await serviceFor(parsed, env);
+  if (operation === 'overview') {
+    return { overview: await service.contentHistoryOverview(repo, number) };
+  }
+  if (operation === 'list') {
+    return {
+      comment_id: commentId,
+      revisions: await service.listContentHistory(repo, number, commentId),
+    };
+  }
+  if (operation === 'detail') {
+    return {
+      revision: await service.detailContentHistory(
+        repo,
+        number,
+        commentId,
+        historyId as number,
+        raw,
+      ),
+    };
+  }
+  return service.softDeleteContentHistory(
+    repo,
+    number,
+    commentId,
+    historyId as number,
+  );
+}
+
+function nonNegativeInteger(value: string, label: string): number {
+  if (!/^(0|[1-9]\d*)$/.test(value))
+    throw usageError(`${label} must be a non-negative integer`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw usageError(`${label} is too large`);
+  return parsed;
+}
+
+function historyHint(
+  family: 'issue' | 'pr',
+  repo: RepositoryRef,
+  number: number,
+): string {
+  return `forgejo-axi ${family} history list --repo ${repo.fullName} ${number}`;
 }
 
 async function issueCreate(
