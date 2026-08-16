@@ -77,13 +77,15 @@ forgejo-axi pr view --repo owner/repo 42 --full
 forgejo-axi pr reviews --repo owner/repo 42 --full
 forgejo-axi pr diff --repo owner/repo 42
 forgejo-axi pr create --repo owner/repo --title 'Add feature' --head feature --base main
+forgejo-axi pr create --repo owner/repo --title 'Add feature' --head feature --base main --body-file ./body.md
+cat body.md | forgejo-axi pr update --repo owner/repo 42 --body-file -
 forgejo-axi pr checks --repo owner/repo 42 --json
 forgejo-axi pr mergeability --repo owner/repo 42
 forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash
 forgejo-axi pr merged --repo owner/repo 42
 ```
 
-`pr create` and `pr update` reconcile existing state instead of duplicating mutations. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
+`pr create` and `pr update` reconcile existing state instead of duplicating mutations. Use either `--body` or `--body-file PATH|-`; file and stdin bodies are forwarded verbatim. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
 
 `pr reviews` and `pr diff` are read-only. Reviews come back with their verdicts and the inline comments anchored to the file and position each one marks, and the diff is the one the forge generates, so no pull ref has to be fetched. Submitting, dismissing, and deleting reviews stay on the `api` path.
 

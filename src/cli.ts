@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { encode } from '@toon-format/toon';
 import { exitCodeForError, runAxiCli } from 'axi-sdk-js';
 import {
@@ -35,7 +36,10 @@ export interface MainOptions {
   argv?: string[];
   env?: NodeJS.ProcessEnv;
   stdout?: Pick<NodeJS.WriteStream, 'write'>;
+  stdin?: Stdin;
 }
+
+type Stdin = AsyncIterable<Uint8Array | string>;
 
 const CONNECTION_FLAGS: FlagSpec = {
   '--base-url': 'value',
@@ -50,6 +54,7 @@ export async function main(options: MainOptions = {}): Promise<void> {
   const argv = options.argv ?? process.argv.slice(2);
   const env = options.env ?? process.env;
   const stdout = options.stdout ?? process.stdout;
+  const stdin: Stdin = options.stdin ?? process.stdin;
   const json = argv.includes('--json');
 
   const formatError = (
@@ -90,10 +95,11 @@ export async function main(options: MainOptions = {}): Promise<void> {
       run: (
         args: string[],
         env: NodeJS.ProcessEnv,
+        stdin: Stdin,
       ) => Promise<Record<string, unknown> | string>,
     ) =>
     async (args: string[]): Promise<string> => {
-      const output = await run(args, env);
+      const output = await run(args, env, stdin);
       return typeof output === 'string' ? output : render(output, json);
     };
 
@@ -244,6 +250,7 @@ async function runApi(
 type SubcommandHandler = (
   args: string[],
   env: NodeJS.ProcessEnv,
+  stdin: Stdin,
 ) => Promise<Record<string, unknown>>;
 
 /** The shared help/validate/dispatch preamble of the pr/label/issue/run families. */
@@ -253,8 +260,9 @@ function dispatch(
 ): (
   args: string[],
   env: NodeJS.ProcessEnv,
+  stdin: Stdin,
 ) => Promise<Record<string, unknown> | string> {
-  return async (args, env) => {
+  return async (args, env, stdin) => {
     const subcommand = args[0];
     if (!subcommand || subcommand === '--help') return helpText(family);
     const handler = Object.hasOwn(handlers, subcommand)
@@ -267,7 +275,7 @@ function dispatch(
     }
     const rest = args.slice(1);
     if (rest.includes('--help')) return helpText(`${family} ${subcommand}`);
-    return handler(rest, env);
+    return handler(rest, env, stdin);
   };
 }
 
@@ -459,6 +467,7 @@ function diffOutput(diff: string, showAll: boolean): Record<string, unknown> {
 async function pullCreate(
   args: string[],
   env: NodeJS.ProcessEnv,
+  stdin: Stdin,
 ): Promise<Record<string, unknown>> {
   const parsed = parseArgs(
     args,
@@ -468,6 +477,7 @@ async function pullCreate(
       '--head': 'value',
       '--base': 'value',
       '--body': 'value',
+      '--body-file': 'value',
       '--draft': 'boolean',
     }),
     'pr create',
@@ -477,7 +487,7 @@ async function pullCreate(
   const title = requireFlag(parsed, '--title');
   const head = requireFlag(parsed, '--head');
   const base = requireFlag(parsed, '--base');
-  const body = stringFlag(parsed, '--body');
+  const body = await pullBody(parsed, stdin);
   const service = await serviceFor(parsed, env);
   return service.createPull(repo, {
     title,
@@ -491,6 +501,7 @@ async function pullCreate(
 async function pullUpdate(
   args: string[],
   env: NodeJS.ProcessEnv,
+  stdin: Stdin,
 ): Promise<Record<string, unknown>> {
   const parsed = parseArgs(
     args,
@@ -498,6 +509,7 @@ async function pullUpdate(
       '--repo': 'value',
       '--title': 'value',
       '--body': 'value',
+      '--body-file': 'value',
       '--base': 'value',
       '--state': 'value',
     }),
@@ -509,16 +521,55 @@ async function pullUpdate(
   const repo = resolveRepo(parsed, env);
   const state = stringFlag(parsed, '--state');
   if (state !== undefined) stateFlag(state, false);
-  const service = await serviceFor(parsed, env);
   const title = stringFlag(parsed, '--title');
-  const body = stringFlag(parsed, '--body');
+  const body = await pullBody(parsed, stdin);
   const base = stringFlag(parsed, '--base');
+  const service = await serviceFor(parsed, env);
   return service.updatePull(repo, number, {
     ...(title === undefined ? {} : { title }),
     ...(body === undefined ? {} : { body }),
     ...(base === undefined ? {} : { base }),
     ...(state === undefined ? {} : { state }),
   });
+}
+
+async function pullBody(
+  parsed: ParsedArgs,
+  stdin: Stdin,
+): Promise<string | undefined> {
+  const body = stringFlag(parsed, '--body');
+  const bodyFile = stringFlag(parsed, '--body-file');
+  if (body !== undefined && bodyFile !== undefined) {
+    throw usageError('--body and --body-file cannot be combined', [
+      `Choose one body source for \`${parsed.command}\``,
+      `Run \`forgejo-axi ${parsed.command} --help\``,
+    ]);
+  }
+  if (bodyFile === undefined) return body;
+
+  try {
+    if (bodyFile === '-') return await readStdin(stdin);
+    return await readFile(bodyFile, 'utf8');
+  } catch {
+    throw new ForgejoAxiError(
+      bodyFile === '-'
+        ? 'Unable to read pull request body from stdin'
+        : `Unable to read pull request body file: ${bodyFile}`,
+      'BODY_FILE_ERROR',
+      {
+        usage: true,
+        suggestions: [
+          'Pass a readable UTF-8 file path or use --body-file - for stdin',
+        ],
+      },
+    );
+  }
+}
+
+async function readStdin(stdin: Stdin): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stdin) chunks.push(Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 async function pullMerge(

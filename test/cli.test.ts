@@ -1,4 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   closeServers,
@@ -81,6 +84,9 @@ describe('CLI contract', () => {
     expect(result.exitCode).toBeUndefined();
     expect(result.output).toContain('--expected-head SHA');
     expect(result.output).not.toContain('repo view');
+
+    const create = await invoke(['pr', 'create', '--help']);
+    expect(create.output).toContain('--body-file PATH|-');
   });
 
   it.each([15, 16] as const)(
@@ -582,6 +588,229 @@ describe('CLI contract', () => {
       merged: true,
       merge_commit_sha: 'merge456',
     });
+  });
+
+  it('reads pull request bodies from UTF-8 files and stdin verbatim', async () => {
+    const fixture = await loadFixture(16);
+    const fileBody = [
+      '# Summary',
+      '',
+      'Actual paragraph.',
+      '',
+      String.raw`literal \n and &#10;`,
+      '',
+    ].join('\r\n');
+    const stdinBody = [
+      'Updated paragraph.',
+      '',
+      String.raw`literal \n and &#10;`,
+    ].join('\r\n');
+    const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-'));
+    const bodyPath = join(dir, 'body.md');
+    await writeFile(bodyPath, fileBody, 'utf8');
+    let pull = { ...fixture.pull };
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls') && recorded.method === 'GET')
+        return json(response, 200, []);
+      if (path.endsWith('/pulls') && recorded.method === 'POST') {
+        const posted = parseJson<Record<string, unknown>>(recorded.body);
+        expect(posted['body']).toBe(fileBody);
+        pull = { ...pull, ...posted };
+        return json(response, 201, pull);
+      }
+      if (path.endsWith('/pulls/42') && recorded.method === 'GET')
+        return json(response, 200, pull);
+      if (path.endsWith('/pulls/42') && recorded.method === 'PATCH') {
+        const patch = parseJson<Record<string, unknown>>(recorded.body);
+        expect(patch['body']).toBe(stdinBody);
+        pull = { ...pull, ...patch };
+        return json(response, 200, pull);
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+
+    try {
+      const created = await invoke([
+        'pr',
+        'create',
+        '--repo',
+        'acme/widgets',
+        '--title',
+        'Created title',
+        '--head',
+        'fix/race',
+        '--base',
+        'main',
+        '--body-file',
+        bodyPath,
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      expect(parseJson<{ created: boolean }>(created.output).created).toBe(
+        true,
+      );
+
+      const updated = await invoke(
+        [
+          'pr',
+          'update',
+          '--repo',
+          'acme/widgets',
+          '42',
+          '--body-file',
+          '-',
+          '--base-url',
+          server.baseUrl,
+          '--json',
+        ],
+        {},
+        Readable.from([stdinBody]),
+      );
+      expect(parseJson<{ updated: boolean }>(updated.output).updated).toBe(
+        true,
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['create', 'update'] as const)(
+    'rejects --body and --body-file together for pr %s before any request',
+    async (command) => {
+      const server = await startServer((_request, response) =>
+        json(response, 500, { message: 'unexpected request' }),
+      );
+      servers.push(server);
+      const commandArgs =
+        command === 'create'
+          ? [
+              'pr',
+              'create',
+              '--title',
+              'Created title',
+              '--head',
+              'fix/race',
+              '--base',
+              'main',
+            ]
+          : ['pr', 'update', '42'];
+      const result = await invoke([
+        ...commandArgs,
+        '--repo',
+        'acme/widgets',
+        '--body',
+        'inline',
+        '--body-file',
+        '-',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      expect(result.exitCode).toBe(2);
+      expect(result.output).toContain(
+        '--body and --body-file cannot be combined',
+      );
+      expect(server.requests).toHaveLength(0);
+    },
+  );
+
+  it('keeps separate leading-dash body values rejected', async () => {
+    const result = await invoke([
+      'pr',
+      'create',
+      '--repo',
+      'acme/widgets',
+      '--title',
+      'Created title',
+      '--head',
+      'fix/race',
+      '--base',
+      'main',
+      '--body',
+      '-',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(result.output).toContain('--body requires a value');
+  });
+
+  it('reports a body-file read failure before contacting Forgejo', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-'));
+    const server = await startServer((_request, response) =>
+      json(response, 500, { message: 'unexpected request' }),
+    );
+    servers.push(server);
+
+    try {
+      const result = await invoke([
+        'pr',
+        'create',
+        '--repo',
+        'acme/widgets',
+        '--title',
+        'Created title',
+        '--head',
+        'fix/race',
+        '--base',
+        'main',
+        '--body-file',
+        join(dir, 'missing.md'),
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      expect(result.exitCode).toBe(2);
+      expect(parseJson(result.output)).toMatchObject({
+        code: 'BODY_FILE_ERROR',
+      });
+      expect(result.output).toContain('Unable to read pull request body file');
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a body-file stdin failure before contacting Forgejo', async () => {
+    const server = await startServer((_request, response) =>
+      json(response, 500, { message: 'unexpected request' }),
+    );
+    servers.push(server);
+    const stdin = (async function* () {
+      yield 'partial';
+      throw new Error('stdin failed');
+    })();
+
+    const result = await invoke(
+      [
+        'pr',
+        'create',
+        '--repo',
+        'acme/widgets',
+        '--title',
+        'Created title',
+        '--head',
+        'fix/race',
+        '--base',
+        'main',
+        '--body-file',
+        '-',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ],
+      {},
+      stdin,
+    );
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      code: 'BODY_FILE_ERROR',
+    });
+    expect(result.output).toContain(
+      'Unable to read pull request body from stdin',
+    );
+    expect(server.requests).toHaveLength(0);
   });
 
   it('degrades unavailable capability probes without failing status', async () => {

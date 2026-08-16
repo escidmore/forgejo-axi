@@ -5,7 +5,7 @@ import {
 } from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { main } from '../src/cli.js';
+import { main, type MainOptions } from '../src/cli.js';
 
 export interface RecordedRequest {
   method: string;
@@ -109,10 +109,11 @@ export async function loadFixture<T>(version: 15 | 16): Promise<T> {
 export async function invoke(
   argv: string[],
   env: NodeJS.ProcessEnv = {},
+  stdin?: AsyncIterable<Uint8Array | string>,
 ): Promise<{ output: string; exitCode: number | undefined }> {
   let output = '';
   process.exitCode = undefined;
-  await main({
+  const options: MainOptions = {
     argv,
     env,
     stdout: {
@@ -121,7 +122,9 @@ export async function invoke(
         return true;
       },
     },
-  });
+  };
+  if (stdin !== undefined) options.stdin = stdin;
+  await main(options);
   return { output, exitCode: process.exitCode };
 }
 
