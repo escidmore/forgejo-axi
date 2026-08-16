@@ -41,6 +41,11 @@ export interface MainOptions {
 
 type Stdin = AsyncIterable<Uint8Array | string>;
 
+const BODY_DECODER = new TextDecoder('utf8', {
+  fatal: true,
+  ignoreBOM: true,
+});
+
 const CONNECTION_FLAGS: FlagSpec = {
   '--base-url': 'value',
   '--token-env': 'value',
@@ -547,14 +552,11 @@ async function pullBody(
   }
   if (bodyFile === undefined) return body;
 
-  try {
-    if (bodyFile === '-') return await readStdin(stdin);
-    return await readFile(bodyFile, 'utf8');
-  } catch {
-    throw new ForgejoAxiError(
+  const failure = (problem: string): ForgejoAxiError =>
+    new ForgejoAxiError(
       bodyFile === '-'
-        ? 'Unable to read pull request body from stdin'
-        : `Unable to read pull request body file: ${bodyFile}`,
+        ? `${problem} pull request body from stdin`
+        : `${problem} pull request body file: ${bodyFile}`,
       'BODY_FILE_ERROR',
       {
         usage: true,
@@ -563,13 +565,25 @@ async function pullBody(
         ],
       },
     );
+
+  let bytes: Uint8Array;
+  try {
+    bytes =
+      bodyFile === '-' ? await readStdin(stdin) : await readFile(bodyFile);
+  } catch {
+    throw failure('Unable to read');
+  }
+  try {
+    return BODY_DECODER.decode(bytes);
+  } catch {
+    throw failure('Unable to decode UTF-8 in');
   }
 }
 
-async function readStdin(stdin: Stdin): Promise<string> {
+async function readStdin(stdin: Stdin): Promise<Buffer> {
   const chunks: Buffer[] = [];
   for await (const chunk of stdin) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
 
 async function pullMerge(

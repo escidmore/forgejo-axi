@@ -736,6 +736,100 @@ describe('CLI contract', () => {
     expect(result.output).toContain('--body requires a value');
   });
 
+  it.each(['--draft', '-x'])(
+    'accepts only the exact - as a separate --body-file value, not %s',
+    async (value) => {
+      const result = await invoke([
+        'pr',
+        'create',
+        '--repo',
+        'acme/widgets',
+        '--title',
+        'Created title',
+        '--head',
+        'fix/race',
+        '--base',
+        'main',
+        '--body-file',
+        value,
+      ]);
+      expect(result.exitCode).toBe(2);
+      expect(result.output).toContain('--body-file requires a value');
+    },
+  );
+
+  it('refuses a body file whose bytes are not valid UTF-8', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-'));
+    const bodyPath = join(dir, 'body.md');
+    await writeFile(bodyPath, Buffer.from([0x53, 0x75, 0x6d, 0xff, 0x0a]));
+    const server = await startServer((_request, response) =>
+      json(response, 500, { message: 'unexpected request' }),
+    );
+    servers.push(server);
+
+    try {
+      const result = await invoke([
+        'pr',
+        'create',
+        '--repo',
+        'acme/widgets',
+        '--title',
+        'Created title',
+        '--head',
+        'fix/race',
+        '--base',
+        'main',
+        '--body-file',
+        bodyPath,
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+      expect(result.exitCode).toBe(2);
+      expect(parseJson(result.output)).toMatchObject({
+        code: 'BODY_FILE_ERROR',
+      });
+      expect(result.output).toContain(
+        'Unable to decode UTF-8 in pull request body file',
+      );
+      expect(server.requests).toHaveLength(0);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses stdin bytes that are not valid UTF-8', async () => {
+    const server = await startServer((_request, response) =>
+      json(response, 500, { message: 'unexpected request' }),
+    );
+    servers.push(server);
+
+    const result = await invoke(
+      [
+        'pr',
+        'update',
+        '--repo',
+        'acme/widgets',
+        '42',
+        '--body-file',
+        '-',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ],
+      {},
+      Readable.from([Buffer.from([0x53, 0x75, 0x6d, 0xff, 0x0a])]),
+    );
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      code: 'BODY_FILE_ERROR',
+    });
+    expect(result.output).toContain(
+      'Unable to decode UTF-8 in pull request body from stdin',
+    );
+    expect(server.requests).toHaveLength(0);
+  });
+
   it('reports a body-file read failure before contacting Forgejo', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'forgejo-axi-'));
     const server = await startServer((_request, response) =>
