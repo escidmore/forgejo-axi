@@ -22,6 +22,7 @@ async function historyServer(
     historyCounts?: Record<string, number>;
     previousHistoryId?: number | null;
     diff?: string;
+    repoPageVisible?: boolean;
   } = {},
 ) {
   const server = await startServer((_request, response, recorded) => {
@@ -58,6 +59,15 @@ async function historyServer(
           ? { ok: true, message: 'deleted' }
           : options.deleteResponse,
       );
+    }
+    // The repository's own web page: what separates a host without the
+    // content-history routes from a repository the web root cannot read.
+    if (!path.includes('/api/v1/') && path.endsWith('/acme/widgets')) {
+      if (options.repoPageVisible === false)
+        return json(response, 404, { message: 'Not found.' });
+      response.statusCode = 200;
+      response.setHeader('content-type', 'text/html');
+      return response.end('<html lang="en"></html>');
     }
     if (options.status !== undefined)
       return json(response, options.status, { message: 'history unavailable' });
@@ -409,6 +419,25 @@ describe('content history', () => {
     expect(unsupported.exitCode).not.toBeUndefined();
     expect(parseJson(unsupported.output)).toMatchObject({
       code: 'CONTENT_HISTORY_UNSUPPORTED',
+    });
+
+    // Same 404s, but the web root cannot read the repository either: an
+    // authorization failure, not a host without the feature.
+    const invisibleServer = await historyServer({
+      status: 404,
+      repoPageVisible: false,
+    });
+    const invisible = await invoke(historyArgs(invisibleServer, 'overview'), {
+      HISTORY_TOKEN: 'secret-token',
+    });
+    expect(parseJson(invisible.output)).toMatchObject({
+      code: 'CONTENT_HISTORY_AUTHORIZATION',
+    });
+    const invisibleList = await invoke(historyArgs(invisibleServer, 'list'), {
+      HISTORY_TOKEN: 'secret-token',
+    });
+    expect(parseJson(invisibleList.output)).toMatchObject({
+      code: 'CONTENT_HISTORY_AUTHORIZATION',
     });
 
     const missingServer = await startServer((_request, response, recorded) => {

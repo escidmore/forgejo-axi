@@ -522,10 +522,15 @@ export class ForgejoService {
     repo: RepositoryRef,
     number: number,
   ): Promise<ContentHistoryOverview> {
-    const response =
-      await this.contentHistoryRequest<ApiContentHistoryOverview>('overview', {
-        path: contentHistoryPath(repo, number, 'overview'),
-      });
+    let response: HttpResponse<ApiContentHistoryOverview>;
+    try {
+      response = await this.contentHistoryRequest<ApiContentHistoryOverview>(
+        'overview',
+        { path: contentHistoryPath(repo, number, 'overview') },
+      );
+    } catch (error) {
+      throw await this.explainMissingContentHistory(repo, error);
+    }
     const data = response.data;
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw contentHistoryInvalidResponse('overview');
@@ -1491,6 +1496,39 @@ export class ForgejoService {
     }
   }
 
+  /**
+   * Forgejo's web root authenticates by session, not by API token, so a
+   * repository this token reads over /api/v1 stays invisible there unless it is
+   * publicly visible — and an invisible repository answers the content history
+   * routes with the same 404 as a host too old to serve them. The repository's
+   * own web page, which every version serves, tells the two apart.
+   */
+  private async explainMissingContentHistory(
+    repo: RepositoryRef,
+    error: unknown,
+  ): Promise<unknown> {
+    if (
+      !(error instanceof ForgejoAxiError) ||
+      error.code !== 'CONTENT_HISTORY_UNSUPPORTED'
+    )
+      return error;
+    try {
+      await this.http.root<string>({
+        path: repoWebPath(repo),
+        accept: 'text/html',
+      });
+    } catch (probe) {
+      if (probe instanceof ForgejoAxiError && probe.code === 'NOT_FOUND') {
+        return new ForgejoAxiError(
+          "Forgejo's web interface cannot read this repository, so its content history is unreachable; that interface authenticates by session rather than by API token",
+          'CONTENT_HISTORY_AUTHORIZATION',
+          { suggestions: contentHistoryHelp() },
+        );
+      }
+    }
+    return error;
+  }
+
   private async contentHistoryRequest<T>(
     operation: 'overview' | 'list' | 'detail' | 'delete',
     input: RequestInput,
@@ -1779,12 +1817,16 @@ function repoPath(repo: RepositoryRef): string {
   return `repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
 
+function repoWebPath(repo: RepositoryRef): string {
+  return `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
+}
+
 function contentHistoryPath(
   repo: RepositoryRef,
   number: number,
   operation: 'overview' | 'list' | 'detail' | 'soft-delete',
 ): string {
-  return `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/issues/${number}/content-history/${operation}`;
+  return `${repoWebPath(repo)}/issues/${number}/content-history/${operation}`;
 }
 
 function parseResponseInteger(

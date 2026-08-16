@@ -428,78 +428,102 @@ try {
   const history = (args) =>
     repoCli(['issue', 'history', ...args, String(n)], { allowFail: true });
   const overview = history(['overview']);
-  ok(
-    'a body edit produces body content history',
-    overview.overview?.total > 0 &&
-      (overview.overview.counts ?? []).some(
-        (c) => c.comment_id === 0 && c.count > 0,
-      ),
-    overview.code ?? '',
-  );
 
-  const listed = history(['list']);
-  const revisions = listed.revisions ?? [];
-  ok(
-    'history list returns the original and the edit, newest first',
-    revisions.length >= 2 &&
-      revisions[0].history_id > revisions[revisions.length - 1].history_id,
-    listed.code ?? '',
-  );
-
-  const detail = revisions[0]
-    ? history(['detail', '--history-id', String(revisions[0].history_id)])
-    : { code: 'no revision to read' };
-  ok(
-    'detail reconstructs both sides of a real edit',
-    detail.revision?.after?.includes(editedBody) === true &&
-      detail.revision.before.includes(priorBody) &&
-      !detail.revision.after.includes(priorBody),
-    detail.code ?? '',
-  );
-
-  // A refused or unsupported history route must leave the view itself intact:
-  // repoCli throws on a nonzero exit, so reaching the assertion is half of it.
-  const enriched = repoCli(['issue', 'view', String(n)]);
-  ok(
-    'view enrichment agrees with the history family, or is absent',
-    enriched.issue.number === n &&
-      enriched.issue.edit_history_count === overview.overview?.total,
-    overview.code ? `history unavailable: ${overview.code}` : '',
-  );
-
-  const oldest = revisions[revisions.length - 1]?.history_id;
-  if (oldest && detail.revision?.can_soft_delete === true) {
-    const removed = history([
-      'soft-delete',
-      '--history-id',
-      String(oldest),
-      '--yes',
-    ]);
+  // The web root authenticates by session, never by API token, so a private
+  // repository is invisible to it however well the token reads /api/v1. That is
+  // the branch a private lane repository takes, and the CLI must name it as
+  // authorization: the same host serves content history for any public
+  // repository, so reporting an unsupported host there would be a lie.
+  if (overview.code) {
     ok(
-      'soft-delete removes a revision',
-      removed.deleted === true,
-      removed.code ?? '',
+      'a repository the web root cannot read reports authorization',
+      overview.code === 'CONTENT_HISTORY_AUTHORIZATION',
+      overview.code,
     );
-    const repeat = history([
-      'soft-delete',
-      '--history-id',
-      String(oldest),
-      '--yes',
-    ]);
     ok(
-      'repeat soft-delete is an already-deleted no-op',
-      repeat.deleted === false && repeat.already_deleted === true,
-      repeat.code ?? '',
+      'list reports that same cause rather than a missing revision',
+      history(['list']).code === 'CONTENT_HISTORY_AUTHORIZATION',
+    );
+    // repoCli throws on a nonzero exit, so reaching the assertion is half of it.
+    const unenriched = repoCli(['issue', 'view', String(n)]);
+    ok(
+      'an unreachable history leaves the view itself intact',
+      unenriched.issue.number === n &&
+        unenriched.issue.edit_history_count === undefined,
+    );
+    console.log(
+      'note: detail and soft-delete need a repository the web root can read',
     );
   } else {
-    const refused = oldest
-      ? history(['soft-delete', '--history-id', String(oldest), '--yes'])
-      : {};
     ok(
-      'soft-delete refuses without the permission the host reports',
-      refused.code === 'CONTENT_HISTORY_DELETE_REFUSED',
-      'the host did not grant can_soft_delete to this token',
+      'a body edit produces body content history',
+      overview.overview?.total > 0 &&
+        (overview.overview.counts ?? []).some(
+          (c) => c.comment_id === 0 && c.count > 0,
+        ),
     );
+
+    const listedHistory = history(['list']);
+    const revisions = listedHistory.revisions ?? [];
+    ok(
+      'history list returns the original and the edit, newest first',
+      revisions.length >= 2 &&
+        revisions[0].history_id > revisions[revisions.length - 1].history_id,
+      listedHistory.code ?? '',
+    );
+
+    const detail = revisions[0]
+      ? history(['detail', '--history-id', String(revisions[0].history_id)])
+      : { code: 'no revision to read' };
+    ok(
+      'detail reconstructs both sides of a real edit',
+      detail.revision?.after?.includes(editedBody) === true &&
+        detail.revision.before.includes(priorBody) &&
+        !detail.revision.after.includes(priorBody),
+      detail.code ?? '',
+    );
+
+    const enriched = repoCli(['issue', 'view', String(n)]);
+    ok(
+      'view enrichment agrees with the history family',
+      enriched.issue.number === n &&
+        enriched.issue.edit_history_count === overview.overview?.total,
+    );
+
+    const oldest = revisions[revisions.length - 1]?.history_id;
+    if (oldest && detail.revision?.can_soft_delete === true) {
+      const removed = history([
+        'soft-delete',
+        '--history-id',
+        String(oldest),
+        '--yes',
+      ]);
+      ok(
+        'soft-delete removes a revision',
+        removed.deleted === true,
+        removed.code ?? '',
+      );
+      const repeat = history([
+        'soft-delete',
+        '--history-id',
+        String(oldest),
+        '--yes',
+      ]);
+      ok(
+        'repeat soft-delete is an already-deleted no-op',
+        repeat.deleted === false && repeat.already_deleted === true,
+        repeat.code ?? '',
+      );
+    } else {
+      const refused = oldest
+        ? history(['soft-delete', '--history-id', String(oldest), '--yes'])
+        : {};
+      ok(
+        'soft-delete refuses without the permission the host reports',
+        refused.code === 'CONTENT_HISTORY_DELETE_REFUSED',
+        'the host did not grant can_soft_delete to this token',
+      );
+    }
   }
 
   // ---- filters must actually narrow ----------------------------------------
