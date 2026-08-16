@@ -67,7 +67,8 @@ async function historyServer(
         return json(response, 404, { message: 'Not found.' });
       response.statusCode = 200;
       response.setHeader('content-type', 'text/html');
-      return response.end('<html lang="en"></html>');
+      response.end('<html lang="en"></html>');
+      return;
     }
     if (options.status !== undefined)
       return json(response, options.status, { message: 'history unavailable' });
