@@ -14,6 +14,7 @@ forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [conne
 forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state STATE]
 forgejo-axi pr list --repo OWNER/REPO [--state STATE] [--limit N|--full] [--fields LIST|all]
 forgejo-axi pr view --repo OWNER/REPO NUMBER [--full]
+forgejo-axi pr history [overview|list|detail|soft-delete] --repo OWNER/REPO NUMBER [--comment-id ID] [--history-id ID] [--raw] [--yes]
 forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full]
 forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full]
 forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY | --body-file PATH|-] [--draft]
@@ -28,6 +29,7 @@ forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--desc
 forgejo-axi label delete --repo OWNER/REPO NAME
 forgejo-axi issue list --repo OWNER/REPO [--state open|closed|all] [--label NAMES] [--assignee USER] [--milestone NAME] [--limit N|--full] [--fields LIST|all]
 forgejo-axi issue view --repo OWNER/REPO NUMBER [--full]
+forgejo-axi issue history [overview|list|detail|soft-delete] --repo OWNER/REPO NUMBER [--comment-id ID] [--history-id ID] [--raw] [--yes]
 forgejo-axi issue create --repo OWNER/REPO --title TITLE [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME]
 forgejo-axi issue edit --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME]
 forgejo-axi issue close --repo OWNER/REPO NUMBER [--comment TEXT]
@@ -47,7 +49,7 @@ separate value beginning with `-` remains reserved for flags, except the exact
 `--body=-` remain values. Use `--` to address another value that begins with
 `-`, such as a label named `-blocked`.
 
-For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim. Input that cannot be read, or whose bytes are not valid UTF-8, is refused with `BODY_FILE_ERROR` (exit `2`) before any request is made, because the invocation named an unusable body source rather than the host failing.
+For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim. Input that cannot be read, or whose bytes are not valid UTF-8, is refused with `BODY_FILE_ERROR` (exit `2`) before any request is made, because the invocation named an unusable body source rather than the host failing. No other command accepts `--body-file`: `issue create`, `issue edit`, and `issue comment` take `--body` only.
 
 Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. `--ca-file`/`FORGEJO_CA_FILE` supplies a replacement CA trust bundle, matching Node's TLS `ca` behavior; it does not append to the platform trust store.
 
@@ -99,7 +101,8 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
 - `pr list`: `{pull_requests,page_info,next?}`. Default rows are `{number,title,state,head}`; `--fields` selects other identity fields and `--fields all` selects all of them.
-- `pr view`: `{pull_request:{...identity,body,body_length,body_truncated}}`. `body` is a 500-Unicode-code-point preview by default and complete with `--full`; `body_length` is measured in Unicode code points.
+- `pr view`: `{pull_request:{...identity,body,body_length,body_truncated,edit_history_count},next?}`. `body` is a 500-Unicode-code-point preview by default and complete with `--full`; `body_length` is measured in Unicode code points. `edit_history_count` and the runnable `next` hint are present only when content history exists. The lookup is best-effort and never fails the view: a host without the content-history routes, or one that refuses or fails to answer them, returns the same document without those fields.
+- `pr history` and `issue history`: `overview` returns `{overview:{counts:[{comment_id,count}],total}}`; `list` returns `{comment_id,revisions:[{history_id,summary}]}` newest first; `detail` returns `{revision:{history_id,previous_history_id,can_soft_delete,before,after,diff_html?}}`; `soft-delete` returns `{deleted,already_deleted?,comment_id,history_id,message?}`. The default operation is `list` and the default comment id is `0`, the body. `before` and `after` are reconstructed from Forgejo's diff HTML with `gd` omitted from `after` and `gi` omitted from `before`; raw HTML is included only with `--raw`. Soft-delete requires `--yes`, never prompts, checks `can_soft_delete`, and exits `0` for an already-deleted no-op; a host that withholds that permission is refused with `CONTENT_HISTORY_DELETE_REFUSED` before anything is posted. A host too old to serve the routes reports `CONTENT_HISTORY_UNSUPPORTED`; a repository the web root itself cannot read reports `CONTENT_HISTORY_AUTHORIZATION`, since that interface authenticates by session rather than by API token and answers for a private repository with the same 404. A revision that does not exist on a host that does serve the routes is `CONTENT_HISTORY_NOT_FOUND`, and diff HTML that cannot be reconstructed is `CONTENT_HISTORY_MALFORMED_DIFF` rather than a silently partial `before` or `after`.
 - `pr create`: `{created,updated,pull_request}`. `pr update`: `{updated,pull_request}`. Existing desired state is exit-0 and mutation-free. Creation refuses with `PAGINATION_INCOMPLETE` if either its initial duplicate search or its post-conflict race-recovery search reaches the pagination ceiling without finding the pull request.
 - `pr checks`: `{checks}`; `pr mergeability`: `{mergeability}`; `pr merge` and `pr merged`: `{proof}`.
 - `pr reviews`: `{reviews,page_info,next?}`. A pull request with no reviews is `reviews: []` with `page_info.fetched=0` and exit `0`.
@@ -107,7 +110,7 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `label list`: `{labels,page_info,next?}`. A repository with no labels is `labels: []` with `page_info.fetched=0` and exit `0`.
 - `label create`: `{created,updated,label}`. `label edit`: `{updated,label}`. `label delete`: `{deleted,label}`.
 - `issue list`: `{issues,page_info,next?}`. Rows carry the selected identity fields, defaulting to `number,title,state,labels`. A repository with no matching issues is `issues: []` with `page_info.fetched=0` and exit `0`.
-- `issue view`: `{issue,comments,comment_info,next?}`. `issue` is an issue identity plus `body`, `body_length`, and `body_truncated`. `comment_info` is `{fetched,displayed,truncated}`.
+- `issue view`: `{issue,comments,comment_info,next?}`. `issue` is an issue identity plus `body`, `body_length`, `body_truncated`, and `edit_history_count` when content history exists, on the same best-effort terms as `pr view`. `comment_info` is `{fetched,displayed,truncated}`; `next` includes a runnable history-list hint when the count is positive.
 - `issue create`: `{issue}`. `issue edit`: `{updated,issue}`. `issue close` and `issue reopen`: `{updated,issue}`, plus `comment` when `--comment` posted one. `issue comment`: `{comment}`.
 - `run list`: `{runs,page_info,next?}`, sharing the `page_info` shape above. Rows carry the selected identity fields, defaulting to `id,title,status,branch`. A repository with no matching runs is `runs: []` with `page_info.fetched=0` and exit `0`.
 - `run view`: `{run,jobs,next?}`. `jobs` is an ordered array of job identities.

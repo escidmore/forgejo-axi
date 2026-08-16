@@ -14,6 +14,7 @@ import {
   redact,
   type Paginated,
   type HttpResponse,
+  type RequestInput,
 } from './http.js';
 
 interface ApiUser {
@@ -144,6 +145,31 @@ interface ApiActionArtifact {
   size_in_bytes?: number;
 }
 
+interface ApiContentHistoryOverview {
+  editedHistoryCountMap?: Record<string, unknown>;
+}
+
+interface ApiContentHistoryEntry {
+  name?: string;
+  value?: number;
+}
+
+interface ApiContentHistoryList {
+  results?: ApiContentHistoryEntry[];
+}
+
+interface ApiContentHistoryDetail {
+  canSoftDelete?: boolean;
+  diffHtml?: string;
+  historyId?: number;
+  prevHistoryId?: number | null;
+}
+
+interface ApiContentHistoryDelete {
+  ok?: boolean;
+  message?: string;
+}
+
 export interface RepositoryRef {
   owner: string;
   name: string;
@@ -271,6 +297,30 @@ export interface IssueInput {
   assignees?: string[];
   milestone?: string;
   state?: string;
+}
+
+export interface ContentHistoryCount {
+  comment_id: number;
+  count: number;
+}
+
+export interface ContentHistoryOverview {
+  counts: ContentHistoryCount[];
+  total: number;
+}
+
+export interface ContentHistoryRevision {
+  history_id: number;
+  summary: string;
+}
+
+export interface ContentHistoryDetail {
+  history_id: number;
+  previous_history_id: number | null;
+  can_soft_delete: boolean;
+  before: string;
+  after: string;
+  diff_html?: string;
 }
 
 export interface RunIdentity {
@@ -459,9 +509,277 @@ export class ForgejoService {
     full: boolean,
   ): Promise<Record<string, unknown>> {
     const response = await this.getPullRaw(repo, number);
-    return {
+    const result: Record<string, unknown> = {
       ...normalizePull(this.config, repo, response),
       ...previewBody(response.body, full),
+    };
+    const historyCount = await this.optionalContentHistoryCount(repo, number);
+    if (historyCount !== null) result['edit_history_count'] = historyCount;
+    return result;
+  }
+
+  async contentHistoryOverview(
+    repo: RepositoryRef,
+    number: number,
+  ): Promise<ContentHistoryOverview> {
+    let response: HttpResponse<ApiContentHistoryOverview>;
+    try {
+      response = await this.contentHistoryRequest<ApiContentHistoryOverview>(
+        'overview',
+        { path: contentHistoryPath(repo, number, 'overview') },
+      );
+    } catch (error) {
+      throw await this.explainMissingContentHistory(repo, error);
+    }
+    const data = response.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw contentHistoryInvalidResponse('overview');
+    }
+    const map = data.editedHistoryCountMap;
+    if (!map || typeof map !== 'object' || Array.isArray(map)) {
+      throw contentHistoryInvalidResponse('overview');
+    }
+    const counts = Object.entries(map)
+      .map(([rawCommentId, rawCount]) => {
+        const commentId = parseResponseInteger(
+          Number(rawCommentId),
+          'Forgejo content history overview contained an invalid comment id',
+          true,
+        );
+        const count = parseResponseInteger(
+          rawCount,
+          'Forgejo content history overview contained an invalid count',
+          true,
+        );
+        return { comment_id: commentId, count };
+      })
+      .sort((left, right) => left.comment_id - right.comment_id);
+    return {
+      counts,
+      total: counts.reduce((total, item) => total + item.count, 0),
+    };
+  }
+
+  async listContentHistory(
+    repo: RepositoryRef,
+    number: number,
+    commentId = 0,
+  ): Promise<ContentHistoryRevision[]> {
+    let response: HttpResponse<ApiContentHistoryList>;
+    try {
+      response = await this.contentHistoryRequest<ApiContentHistoryList>(
+        'list',
+        {
+          path: contentHistoryPath(repo, number, 'list'),
+          query: { comment_id: commentId },
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof ForgejoAxiError &&
+        error.code === 'CONTENT_HISTORY_NOT_FOUND'
+      ) {
+        await this.contentHistoryOverview(repo, number);
+      }
+      throw error;
+    }
+    if (
+      !response.data ||
+      typeof response.data !== 'object' ||
+      Array.isArray(response.data) ||
+      !Array.isArray(response.data.results)
+    ) {
+      throw contentHistoryInvalidResponse('list');
+    }
+    const revisions = response.data.results.map((entry) => {
+      if (
+        !entry ||
+        typeof entry !== 'object' ||
+        Array.isArray(entry) ||
+        typeof entry.name !== 'string'
+      ) {
+        throw contentHistoryInvalidResponse('list');
+      }
+      const historyId = parseResponseInteger(
+        entry.value,
+        'Forgejo content history list omitted a valid history id',
+      );
+      let summary: string;
+      try {
+        summary = decodeHistoryHtml(entry.name ?? '');
+      } catch {
+        throw contentHistoryInvalidResponse('list');
+      }
+      return { history_id: historyId, summary };
+    });
+    return revisions.sort((left, right) => right.history_id - left.history_id);
+  }
+
+  async detailContentHistory(
+    repo: RepositoryRef,
+    number: number,
+    commentId: number,
+    historyId: number,
+    includeRaw = false,
+  ): Promise<ContentHistoryDetail> {
+    let response: HttpResponse<ApiContentHistoryDetail>;
+    try {
+      response = await this.contentHistoryRequest<ApiContentHistoryDetail>(
+        'detail',
+        {
+          path: contentHistoryPath(repo, number, 'detail'),
+          query: { comment_id: commentId, history_id: historyId },
+        },
+      );
+    } catch (error) {
+      if (
+        error instanceof ForgejoAxiError &&
+        error.code === 'CONTENT_HISTORY_NOT_FOUND'
+      ) {
+        await this.contentHistoryOverview(repo, number);
+      }
+      throw error;
+    }
+    const data = response.data;
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw contentHistoryInvalidResponse('detail');
+    }
+    const returnedHistoryId = parseResponseInteger(
+      data.historyId,
+      'Forgejo content history detail omitted a valid history id',
+    );
+    if (returnedHistoryId !== historyId) {
+      throw new ForgejoAxiError(
+        'Forgejo content history detail returned a different history id',
+        'CONTENT_HISTORY_INVALID_RESPONSE',
+        {
+          details: { expected: historyId, actual: returnedHistoryId },
+          suggestions: contentHistoryHelp(),
+        },
+      );
+    }
+    if (typeof data.canSoftDelete !== 'boolean') {
+      throw contentHistoryInvalidResponse('detail');
+    }
+    if (typeof data.diffHtml !== 'string') {
+      throw contentHistoryInvalidDiff();
+    }
+    let before: string;
+    let after: string;
+    try {
+      ({ before, after } = reconstructHistoryDiff(data.diffHtml));
+    } catch {
+      throw contentHistoryInvalidDiff();
+    }
+    const detail: ContentHistoryDetail = {
+      history_id: returnedHistoryId,
+      previous_history_id: parsePreviousHistoryId(data.prevHistoryId),
+      can_soft_delete: data.canSoftDelete,
+      before,
+      after,
+    };
+    if (includeRaw) detail.diff_html = data.diffHtml;
+    return detail;
+  }
+
+  async softDeleteContentHistory(
+    repo: RepositoryRef,
+    number: number,
+    commentId: number,
+    historyId: number,
+  ): Promise<Record<string, unknown>> {
+    const detail = await this.detailContentHistory(
+      repo,
+      number,
+      commentId,
+      historyId,
+    );
+    if (!detail.can_soft_delete) {
+      throw new ForgejoAxiError(
+        'Forgejo does not allow soft deletion of this content history revision',
+        'CONTENT_HISTORY_DELETE_REFUSED',
+        {
+          details: { comment_id: commentId, history_id: historyId },
+          suggestions: contentHistoryHelp(),
+        },
+      );
+    }
+    let response: HttpResponse<ApiContentHistoryDelete | null>;
+    try {
+      response =
+        await this.contentHistoryRequest<ApiContentHistoryDelete | null>(
+          'delete',
+          {
+            method: 'POST',
+            path: contentHistoryPath(repo, number, 'soft-delete'),
+            query: { comment_id: commentId, history_id: historyId },
+          },
+        );
+    } catch (error) {
+      // The detail preflight established that this revision existed. A 404
+      // from the mutation therefore represents a concurrent deletion.
+      if (
+        error instanceof ForgejoAxiError &&
+        error.code === 'CONTENT_HISTORY_NOT_FOUND'
+      ) {
+        return {
+          deleted: false,
+          already_deleted: true,
+          comment_id: commentId,
+          history_id: historyId,
+        };
+      }
+      throw error;
+    }
+    if (response.data === null) {
+      if (response.status === 204) {
+        return { deleted: true, comment_id: commentId, history_id: historyId };
+      }
+      throw new ForgejoAxiError(
+        'Forgejo returned an empty content history deletion response',
+        'CONTENT_HISTORY_DELETE_FAILED',
+        {
+          details: { comment_id: commentId, history_id: historyId },
+          suggestions: contentHistoryHelp(),
+        },
+      );
+    }
+    if (
+      typeof response.data !== 'object' ||
+      Array.isArray(response.data) ||
+      typeof response.data.ok !== 'boolean'
+    ) {
+      throw contentHistoryInvalidResponse('delete');
+    }
+    if (!response.data.ok) {
+      if (
+        /already\s+(?:been\s+)?deleted|not found|does not exist|no longer exists/i.test(
+          response.data.message ?? '',
+        )
+      ) {
+        return {
+          deleted: false,
+          already_deleted: true,
+          comment_id: commentId,
+          history_id: historyId,
+        };
+      }
+      throw new ForgejoAxiError(
+        'Forgejo refused content history deletion',
+        'CONTENT_HISTORY_DELETE_FAILED',
+        {
+          details: { comment_id: commentId, history_id: historyId },
+          suggestions: contentHistoryHelp(),
+        },
+      );
+    }
+    return {
+      deleted: true,
+      comment_id: commentId,
+      history_id: historyId,
+      ...(typeof response.data.message === 'string'
+        ? { message: response.data.message }
+        : {}),
     };
   }
 
@@ -877,11 +1195,16 @@ export class ForgejoService {
         'INVALID_RESPONSE',
       );
     }
+    const normalizedIssue = {
+      ...normalizeIssue(this.config, repo, raw),
+      ...previewBody(raw.body, full),
+    };
+    const historyCount = await this.optionalContentHistoryCount(repo, number);
+    if (historyCount !== null)
+      (normalizedIssue as Record<string, unknown>)['edit_history_count'] =
+        historyCount;
     return {
-      issue: {
-        ...normalizeIssue(this.config, repo, raw),
-        ...previewBody(raw.body, full),
-      },
+      issue: normalizedIssue,
       comments: response.data.map((comment) =>
         normalizeComment(this.config, repo, comment, full),
       ),
@@ -1156,6 +1479,65 @@ export class ForgejoService {
       });
     }
     return { run_id: runId, dir, downloaded };
+  }
+
+  private async optionalContentHistoryCount(
+    repo: RepositoryRef,
+    number: number,
+  ): Promise<number | null> {
+    try {
+      const overview = await this.contentHistoryOverview(repo, number);
+      return overview.total > 0 ? overview.total : null;
+    } catch (error) {
+      // History is an optional view adornment: no history failure may hide the
+      // issue or pull request the caller actually asked for.
+      if (error instanceof ForgejoAxiError) return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Forgejo's web root authenticates by session, not by API token, so a
+   * repository this token reads over /api/v1 stays invisible there unless it is
+   * publicly visible — and an invisible repository answers the content history
+   * routes with the same 404 as a host too old to serve them. The repository's
+   * own web page, which every version serves, tells the two apart.
+   */
+  private async explainMissingContentHistory(
+    repo: RepositoryRef,
+    error: unknown,
+  ): Promise<unknown> {
+    if (
+      !(error instanceof ForgejoAxiError) ||
+      error.code !== 'CONTENT_HISTORY_UNSUPPORTED'
+    )
+      return error;
+    try {
+      await this.http.root<string>({
+        path: repoWebPath(repo),
+        accept: 'text/html',
+      });
+    } catch (probe) {
+      if (probe instanceof ForgejoAxiError && probe.code === 'NOT_FOUND') {
+        return new ForgejoAxiError(
+          "Forgejo's web interface cannot read this repository, so its content history is unreachable; that interface authenticates by session rather than by API token",
+          'CONTENT_HISTORY_AUTHORIZATION',
+          { suggestions: contentHistoryHelp() },
+        );
+      }
+    }
+    return error;
+  }
+
+  private async contentHistoryRequest<T>(
+    operation: 'overview' | 'list' | 'detail' | 'delete',
+    input: RequestInput,
+  ): Promise<HttpResponse<T>> {
+    try {
+      return await this.http.root<T>(input);
+    } catch (error) {
+      throw translateContentHistoryError(error, operation);
+    }
   }
 
   private async getRunRaw(
@@ -1434,6 +1816,270 @@ export function pageInfo<T>(page: Paginated<T>, displayed: number): PageInfo {
 function repoPath(repo: RepositoryRef): string {
   return `repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
+
+function repoWebPath(repo: RepositoryRef): string {
+  return `${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
+}
+
+function contentHistoryPath(
+  repo: RepositoryRef,
+  number: number,
+  operation: 'overview' | 'list' | 'detail' | 'soft-delete',
+): string {
+  return `${repoWebPath(repo)}/issues/${number}/content-history/${operation}`;
+}
+
+function parseResponseInteger(
+  value: unknown,
+  message: string,
+  allowZero = false,
+): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    (allowZero ? value < 0 : value < 1)
+  ) {
+    throw contentHistoryInvalidResponse('response', message);
+  }
+  return value;
+}
+
+function parsePreviousHistoryId(
+  value: number | null | undefined,
+): number | null {
+  if (value === undefined || value === null || value === 0) return null;
+  return parseResponseInteger(
+    value,
+    'Forgejo content history detail contained an invalid previous history id',
+    true,
+  );
+}
+
+function contentHistoryInvalidResponse(
+  operation: string,
+  message = `Forgejo returned an invalid content history ${operation} response`,
+): ForgejoAxiError {
+  return new ForgejoAxiError(message, 'CONTENT_HISTORY_INVALID_RESPONSE', {
+    suggestions: contentHistoryHelp(),
+  });
+}
+
+function contentHistoryInvalidDiff(): ForgejoAxiError {
+  return new ForgejoAxiError(
+    'Forgejo returned a malformed content history diff',
+    'CONTENT_HISTORY_MALFORMED_DIFF',
+    { suggestions: contentHistoryHelp() },
+  );
+}
+
+function contentHistoryHelp(): string[] {
+  return ['forgejo-axi issue history --help', 'forgejo-axi pr history --help'];
+}
+
+function translateContentHistoryError(
+  error: unknown,
+  operation: 'overview' | 'list' | 'detail' | 'delete',
+): ForgejoAxiError {
+  if (!(error instanceof ForgejoAxiError)) {
+    throw error;
+  }
+  if (
+    error.code !== 'NOT_FOUND' &&
+    error.code !== 'AUTH_REQUIRED' &&
+    error.code !== 'FORBIDDEN' &&
+    error.code !== 'API_ERROR'
+  )
+    return error;
+  const code =
+    error.code === 'NOT_FOUND'
+      ? operation === 'overview'
+        ? 'CONTENT_HISTORY_UNSUPPORTED'
+        : 'CONTENT_HISTORY_NOT_FOUND'
+      : error.code === 'AUTH_REQUIRED' || error.code === 'FORBIDDEN'
+        ? 'CONTENT_HISTORY_AUTHORIZATION'
+        : operation === 'delete'
+          ? 'CONTENT_HISTORY_DELETE_FAILED'
+          : 'CONTENT_HISTORY_REQUEST_FAILED';
+  const message =
+    code === 'CONTENT_HISTORY_UNSUPPORTED'
+      ? 'This Forgejo host does not support content history'
+      : code === 'CONTENT_HISTORY_NOT_FOUND'
+        ? 'Forgejo content history is unavailable or the requested history was not found'
+        : code === 'CONTENT_HISTORY_AUTHORIZATION'
+          ? 'Forgejo authorization does not permit content history access'
+          : operation === 'delete'
+            ? 'Forgejo content history deletion failed'
+            : 'Forgejo content history request failed';
+  return new ForgejoAxiError(message, code, {
+    suggestions: contentHistoryHelp(),
+  });
+}
+
+function reconstructHistoryDiff(diffHtml: string): {
+  before: string;
+  after: string;
+} {
+  return {
+    before: collectHistorySide(diffHtml, 'gi'),
+    after: collectHistorySide(diffHtml, 'gd'),
+  };
+}
+
+function decodeHistoryHtml(html: string): string {
+  return collectHistorySide(html, null);
+}
+
+function collectHistorySide(html: string, omittedClass: string | null): string {
+  const stack: Array<{ tag: string; omitted: boolean }> = [];
+  const output: string[] = [];
+  const voidTags = new Set([
+    'area',
+    'base',
+    'br',
+    'col',
+    'embed',
+    'hr',
+    'img',
+    'input',
+    'link',
+    'meta',
+    'param',
+    'source',
+    'track',
+    'wbr',
+  ]);
+  let index = 0;
+  while (index < html.length) {
+    if (html[index] !== '<') {
+      const next = html.indexOf('<', index);
+      const end = next === -1 ? html.length : next;
+      if (!stack.some((item) => item.omitted))
+        output.push(decodeHistoryEntities(html.slice(index, end)));
+      index = end;
+      continue;
+    }
+    const end = historyTagEnd(html, index + 1);
+    const rawTag = html.slice(index + 1, end);
+    if (rawTag.startsWith('!--')) {
+      if (!rawTag.endsWith('--')) throw new Error('Unclosed HTML comment');
+      index = end + 1;
+      continue;
+    }
+    if (rawTag.startsWith('!') || rawTag.startsWith('?')) {
+      index = end + 1;
+      continue;
+    }
+    if (rawTag.startsWith('/')) {
+      const tag = rawTag
+        .slice(1)
+        .trim()
+        .match(/^[A-Za-z][\w:-]*/)?.[0];
+      const open = stack.pop();
+      if (!tag || !open || open.tag !== tag.toLowerCase())
+        throw new Error('Mismatched HTML tag');
+      index = end + 1;
+      continue;
+    }
+    const tag = rawTag.match(/^[A-Za-z][\w:-]*/)?.[0];
+    if (!tag) throw new Error('Malformed HTML tag');
+    const parentOmitted = stack.some((item) => item.omitted);
+    const omitted =
+      parentOmitted ||
+      (omittedClass !== null && historyClasses(rawTag).includes(omittedClass));
+    if (tag.toLowerCase() === 'br' && !omitted) output.push('\n');
+    const selfClosing =
+      /\/\s*$/.test(rawTag) || voidTags.has(tag.toLowerCase());
+    if (!selfClosing) stack.push({ tag: tag.toLowerCase(), omitted });
+    index = end + 1;
+  }
+  if (stack.length > 0) throw new Error('Unclosed HTML tag');
+  return output.join('');
+}
+
+function historyTagEnd(html: string, start: number): number {
+  let quote: string | null = null;
+  for (let index = start; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '>') {
+      return index;
+    }
+  }
+  throw new Error('Unclosed HTML tag');
+}
+
+function historyClasses(rawTag: string): string[] {
+  const match = rawTag.match(/\bclass\s*=\s*(?:(["'])(.*?)\1|([^\s>]+))/i);
+  return (match?.[2] ?? match?.[3] ?? '').split(/\s+/).filter(Boolean);
+}
+
+function decodeHistoryEntities(value: string): string {
+  return value.replace(
+    /&(?:#x([0-9a-f]+)|#([0-9]+)|([a-z][a-z0-9]+));/gi,
+    (
+      whole,
+      hex: string | undefined,
+      decimal: string | undefined,
+      name: string | undefined,
+    ) => {
+      if (hex !== undefined) {
+        const codePoint = Number.parseInt(hex, 16);
+        return validHistoryCodePoint(codePoint)
+          ? String.fromCodePoint(codePoint)
+          : whole;
+      }
+      if (decimal !== undefined) {
+        const codePoint = Number.parseInt(decimal, 10);
+        return validHistoryCodePoint(codePoint)
+          ? String.fromCodePoint(codePoint)
+          : whole;
+      }
+      return HISTORY_NAMED_ENTITIES[name?.toLowerCase() ?? ''] ?? whole;
+    },
+  );
+}
+
+function validHistoryCodePoint(value: number): boolean {
+  return Number.isInteger(value) && value >= 0 && value <= 0x10ffff;
+}
+
+const HISTORY_NAMED_ENTITIES: Record<string, string> = {
+  amp: '&',
+  apos: "'",
+  bull: '\u2022',
+  copy: '\u00a9',
+  deg: '\u00b0',
+  divide: '\u00f7',
+  eacute: '\u00e9',
+  emsp: '\u2003',
+  ensp: '\u2002',
+  euro: '\u20ac',
+  gt: '>',
+  hellip: '\u2026',
+  laquo: '\u00ab',
+  ldquo: '\u201c',
+  le: '\u2264',
+  lt: '<',
+  mdash: '\u2014',
+  middot: '\u00b7',
+  nbsp: '\u00a0',
+  ndash: '\u2013',
+  para: '\u00b6',
+  pound: '\u00a3',
+  quot: '"',
+  raquo: '\u00bb',
+  rdquo: '\u201d',
+  reg: '\u00ae',
+  rsquo: '\u2019',
+  sect: '\u00a7',
+  shy: '\u00ad',
+  times: '\u00d7',
+  trade: '\u2122',
+  yen: '\u00a5',
+};
 
 /** A canonical URL is emitted without its trailing slash. */
 function canonical(url: URL): string {

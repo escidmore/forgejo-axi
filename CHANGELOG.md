@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) as scoped by
 [`docs/contract.md`](docs/contract.md): command names, field meanings, enum
 values, and exit semantics change only in a major release.
 
+## [Unreleased]
+
+### Added
+
+- `pr history` and `issue history` command families for Forgejo content
+  history: `overview`, `list`, `detail`, and `soft-delete`. `detail`
+  reconstructs plain `before` and `after` text from Forgejo's diff HTML and
+  returns the raw HTML only with `--raw`; `soft-delete` requires `--yes`, never
+  prompts, checks the server's own permission, and treats an already-deleted
+  revision as a no-op.
+- `edit_history_count` and a runnable history hint on `pr view` and
+  `issue view` when a body or comment has been edited. The enrichment is
+  best-effort: a host without content history, or one that refuses it, leaves
+  the view unchanged rather than failing it.
+- `--body-file PATH` and `--body-file -` for `pr create` and `pr update`,
+  reading a UTF-8 file or stdin and forwarding the content verbatim.
+
 ## [1.1.0] - 2026-08-15
 
 ### Added
@@ -44,5 +61,6 @@ First public release.
 - An Agent Skill at `skills/forgejo-axi/SKILL.md`, generated from the CLI's own
   help text and byte-checked against its sources.
 
+[unreleased]: https://github.com/escidmore/forgejo-axi/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.1.0
 [1.0.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.0.0

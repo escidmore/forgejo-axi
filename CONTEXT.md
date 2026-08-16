@@ -16,6 +16,11 @@ The status a command reports when the capability it needs is absent from the
 connected Forgejo. Unsupported is a distinct, successful outcome — not a failure
 and not an error. Example: Actions run-jobs and job-log routes on Forgejo 15.0.5.
 
+This holds for probed Capabilities only. Content history is served from the web
+root, which the Swagger document does not describe and no probe reaches, so a
+host too old to serve it fails with `CONTENT_HISTORY_UNSUPPORTED` instead of
+returning the unsupported document.
+
 ## Check
 
 A single commit status reported against a pull request's head SHA, identified by
