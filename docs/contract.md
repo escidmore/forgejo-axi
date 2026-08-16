@@ -41,7 +41,11 @@ forgejo-axi run download --repo OWNER/REPO RUN_ID --dir DIR [--name NAME]
 
 With no arguments and no configured base URL, the CLI returns a configuration-free home document. With `FORGEJO_BASE_URL` or a single hosts-file entry configured, bare invocation performs the same runtime probes as `status` and may fail with a runtime exit. `--help` and `--version` are top-level, sole-argument invocations.
 
-A bare `--` ends flag parsing; every remaining argument is a positional. Values beginning with `-` remain reserved for flags, except the exact `-` accepted by `--body-file` as its stdin marker. Use `--` to address another value that begins with `-`, such as a label named `-blocked`.
+A bare `--` ends flag parsing; every remaining argument is a positional. A
+separate value beginning with `-` remains reserved for flags, except the exact
+`-` accepted by `--body-file` as its stdin marker. Inline values such as
+`--body=-` remain values. Use `--` to address another value that begins with
+`-`, such as a label named `-blocked`.
 
 For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim.
 

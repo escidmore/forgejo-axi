@@ -118,8 +118,10 @@ hosts cannot share a credential.
 - Capabilities are probed from the host's runtime API document per route, never
   inferred from its version.
 - A bare \`--\` ends flag parsing; use it to address a value that begins with
-  \`-\`, such as a label named \`-blocked\`. The exact \`-\` is accepted only by
-  \`--body-file\` as its stdin marker.
+  \`-\`, such as a label named \`-blocked\`. A separate value beginning with
+  \`-\` is otherwise reserved for flags, while the exact \`-\` is accepted only
+  by \`--body-file\` as its stdin marker. Inline values such as \`--body=-\`
+  remain values.
 
 \`docs/contract.md\` in the repository is the authority for output schemas,
 status semantics, and exit codes.
