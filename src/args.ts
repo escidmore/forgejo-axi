@@ -57,7 +57,9 @@ export function parseArgs(
     const value = inlineValue ?? args[index + 1];
     if (
       value === undefined ||
-      (inlineValue === undefined && value.startsWith('-'))
+      (inlineValue === undefined &&
+        value.startsWith('-') &&
+        !(name === '--body-file' && value === '-'))
     ) {
       throw usageError(`${name} requires a value`);
     }

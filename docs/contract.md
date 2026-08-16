@@ -16,8 +16,8 @@ forgejo-axi pr list --repo OWNER/REPO [--state STATE] [--limit N|--full] [--fiel
 forgejo-axi pr view --repo OWNER/REPO NUMBER [--full]
 forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full]
 forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full]
-forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY] [--draft]
-forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--base BRANCH] [--state open|closed]
+forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY | --body-file PATH|-] [--draft]
+forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed]
 forgejo-axi pr checks --repo OWNER/REPO NUMBER
 forgejo-axi pr mergeability --repo OWNER/REPO NUMBER
 forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merge|squash|rebase]
@@ -41,7 +41,13 @@ forgejo-axi run download --repo OWNER/REPO RUN_ID --dir DIR [--name NAME]
 
 With no arguments and no configured base URL, the CLI returns a configuration-free home document. With `FORGEJO_BASE_URL` or a single hosts-file entry configured, bare invocation performs the same runtime probes as `status` and may fail with a runtime exit. `--help` and `--version` are top-level, sole-argument invocations.
 
-A bare `--` ends flag parsing; every remaining argument is a positional. This is the only way to address a value that begins with `-`, such as a label named `-blocked`.
+A bare `--` ends flag parsing; every remaining argument is a positional. A
+separate value beginning with `-` remains reserved for flags, except the exact
+`-` accepted by `--body-file` as its stdin marker. Inline values such as
+`--body=-` remain values. Use `--` to address another value that begins with
+`-`, such as a label named `-blocked`.
+
+For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim. Input that cannot be read, or whose bytes are not valid UTF-8, is refused with `BODY_FILE_ERROR` (exit `2`) before any request is made, because the invocation named an unusable body source rather than the host failing.
 
 Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. `--ca-file`/`FORGEJO_CA_FILE` supplies a replacement CA trust bundle, matching Node's TLS `ca` behavior; it does not append to the platform trust store.
 
