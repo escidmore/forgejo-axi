@@ -110,6 +110,7 @@ export async function invoke(
   argv: string[],
   env: NodeJS.ProcessEnv = {},
   stdin?: AsyncIterable<Uint8Array | string>,
+  execPath?: string,
 ): Promise<{ output: string; exitCode: number | undefined }> {
   let output = '';
   process.exitCode = undefined;
@@ -124,6 +125,7 @@ export async function invoke(
     },
   };
   if (stdin !== undefined) options.stdin = stdin;
+  if (execPath !== undefined) options.execPath = execPath;
   await main(options);
   return { output, exitCode: process.exitCode };
 }

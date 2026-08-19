@@ -1,6 +1,11 @@
 import { readFile } from 'node:fs/promises';
 import { encode } from '@toon-format/toon';
-import { exitCodeForError, runAxiCli } from 'axi-sdk-js';
+import {
+  exitCodeForError,
+  installSessionStartHooks,
+  runAxiCli,
+  shouldInstallHooksForNodeAxiExecPath,
+} from 'axi-sdk-js';
 import {
   boolFlag,
   parseArgs,
@@ -37,6 +42,8 @@ export interface MainOptions {
   env?: NodeJS.ProcessEnv;
   stdout?: Pick<NodeJS.WriteStream, 'write'>;
   stdin?: Stdin;
+  /** Entry point `setup hooks` wires a session hook to; defaults to argv[1]. */
+  execPath?: string;
 }
 
 type Stdin = AsyncIterable<Uint8Array | string>;
@@ -60,6 +67,7 @@ export async function main(options: MainOptions = {}): Promise<void> {
   const env = options.env ?? process.env;
   const stdout = options.stdout ?? process.stdout;
   const stdin: Stdin = options.stdin ?? process.stdin;
+  const execPath = options.execPath ?? process.argv[1] ?? '';
   const json = argv.includes('--json');
 
   const formatError = (
@@ -123,6 +131,7 @@ export async function main(options: MainOptions = {}): Promise<void> {
       label: command(runLabel),
       issue: command(runIssue),
       run: command(runRun),
+      setup: command(makeRunSetup(execPath)),
     },
     getCommandHelp: (name) => COMMAND_HELP[name],
     renderUnknownCommand: (name) =>
@@ -281,6 +290,105 @@ function dispatch(
     const rest = args.slice(1);
     if (rest.includes('--help')) return helpText(`${family} ${subcommand}`);
     return handler(rest, env, stdin);
+  };
+}
+
+/**
+ * The entry points a session hook may be wired to. The SDK infers this from
+ * argv when it is not told, but naming it here means the command reports its
+ * own decision rather than discovering the SDK's after the fact.
+ */
+const HOOK_MARKER = 'forgejo-axi';
+const HOOK_BINARY_NAMES = [HOOK_MARKER];
+const HOOK_DIST_ENTRYPOINTS = [`dist/bin/${HOOK_MARKER}.js`];
+
+function makeRunSetup(
+  execPath: string,
+): (
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  stdin: Stdin,
+) => Promise<Record<string, unknown> | string> {
+  return dispatch('setup', {
+    hooks: (args, env) => setupHooks(args, env, execPath),
+  });
+}
+
+/**
+ * Install the agent SessionStart hooks that carry this tool's ambient context.
+ *
+ * Local only: it resolves no host and reads no credential, so it works before
+ * the CLI is configured at all -- which is when a first-time user runs it.
+ */
+async function setupHooks(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  execPath: string,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(
+    args,
+    { '--json': 'boolean', '--help': 'boolean' },
+    'setup hooks',
+  );
+  rejectPositionals(parsed);
+  await Promise.resolve();
+
+  // The SDK declines silently when the entry point is not an installed
+  // forgejo-axi binary -- a dev checkout, a bundler, some other runner -- which
+  // is the right refusal but would otherwise be reported here as a successful
+  // install. Asking its own predicate first is what lets this answer say which
+  // of the two happened.
+  const installable =
+    execPath !== '' &&
+    shouldInstallHooksForNodeAxiExecPath(execPath, {
+      marker: HOOK_MARKER,
+      binaryNames: HOOK_BINARY_NAMES,
+      distEntrypoints: HOOK_DIST_ENTRYPOINTS,
+    });
+  if (!installable) {
+    return {
+      hooks: {
+        installed: false,
+        reason: 'entry_point_not_an_installed_binary',
+        entry_point: execPath,
+      },
+      next: [
+        'Install the CLI with `npm install -g forgejo-axi`, then rerun `forgejo-axi setup hooks`',
+      ],
+    };
+  }
+
+  const failures: string[] = [];
+  // The SDK falls back to os.homedir(); passing the environment's own value
+  // when it has one keeps the command testable against a scratch directory
+  // instead of the real home, and resolves to the same place in production.
+  const home = env['HOME'] ?? env['USERPROFILE'];
+  installSessionStartHooks({
+    marker: HOOK_MARKER,
+    binaryNames: HOOK_BINARY_NAMES,
+    distEntrypoints: HOOK_DIST_ENTRYPOINTS,
+    execPath,
+    ...(home === undefined || home === '' ? {} : { homeDir: home }),
+    onError: (message) => failures.push(message),
+  });
+  if (failures.length > 0) {
+    throw new ForgejoAxiError(
+      'Some agent hook targets could not be written',
+      'SETUP_FAILED',
+      {
+        details: { failures },
+        suggestions: [
+          'Fix the reported paths, then run `forgejo-axi setup hooks` again',
+        ],
+      },
+    );
+  }
+  return {
+    hooks: { installed: true, entry_point: execPath },
+    next: [
+      'Start a new agent session; the hook runs at session start',
+      'forgejo-axi status --base-url https://forgejo.example',
+    ],
   };
 }
 

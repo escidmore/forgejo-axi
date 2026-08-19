@@ -17,6 +17,7 @@ Usage:
   forgejo-axi label <list|create|edit|delete> ...
   forgejo-axi issue <list|view|history|create|edit|close|reopen|comment> ...
   forgejo-axi run <list|view|cancel|download> ...
+  forgejo-axi setup hooks
 
 Connection flags:
   --base-url URL     Forgejo root URL; defaults to environment or hosts.json
@@ -100,14 +101,27 @@ in next.
 Run \`forgejo-axi run <command> --help\` for flags and examples.
 `;
 
+const SETUP_HELP = `forgejo-axi setup — local agent integration
+
+Commands:
+  hooks   Install or repair the agent SessionStart hooks
+
+Nothing here reaches a Forgejo host: setup resolves no host and reads no
+credential, so it works before the CLI is configured.
+
+Run \`forgejo-axi setup <command> --help\` for flags and examples.
+`;
+
 export const FAMILY_HELP: Record<string, string> = {
   pr: PR_HELP,
   label: LABEL_HELP,
   issue: ISSUE_HELP,
   run: RUN_HELP,
+  setup: SETUP_HELP,
 };
 
 export const HELP: Record<string, string> = {
+  'setup hooks': `forgejo-axi setup hooks — install or repair agent SessionStart hooks\n\nUsage:\n  forgejo-axi setup hooks [--json]\n\nWrites the SessionStart hook that gives Claude Code, Codex and OpenCode this\ntool's ambient context at the start of a session. Rerunning it is a no-op once\nthe hook is current; it is the repair path as well as the install path.\n\nNo host is contacted and no credential is read.\n\nExample:\n  forgejo-axi setup hooks\n`,
   status: `forgejo-axi status — probe host, authentication, version, and capabilities\n\nUsage:\n  forgejo-axi status [connection flags]\n\nExample:\n  forgejo-axi status --base-url https://forgejo.example\n`,
   'repo view': `forgejo-axi repo view — show repository identity and lifecycle features\n\nUsage:\n  forgejo-axi repo view --repo OWNER/REPO [connection flags]\n\nExample:\n  forgejo-axi repo view --repo owner/repo\n`,
   api: `forgejo-axi api — call a Forgejo API v1 path\n\nUsage:\n  forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]\n\nFlags:\n  --data JSON    JSON request body\n  --paginate     Fetch every array page (GET only)\n  --limit N      Display at most N fetched rows in TOON mode\n  --full         Display every fetched row in TOON mode\n\nExamples:\n  forgejo-axi api GET repos/owner/repo\n  forgejo-axi api GET repos/owner/repo/pulls --paginate --full\n  forgejo-axi api PATCH repos/owner/repo/pulls/4 --data '{"title":"New title"}'\n`,
