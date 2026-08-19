@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveConnection } from '../src/config.js';
 import {
   ForgejoService,
+  parsePullTarget,
   parseRepository,
   type ChecksResult,
 } from '../src/forgejo.js';
@@ -32,6 +33,120 @@ async function serviceFor(server: FakeServer): Promise<ForgejoService> {
     await resolveConnection({ baseUrl: server.baseUrl }, {}),
   );
 }
+
+describe('pull request addressing', () => {
+  it('reads OWNER/REPO and the number out of every URL form Forgejo prints', () => {
+    const cases: Array<[string, string, number]> = [
+      ['https://forgejo.example/acme/widgets/pulls/42', 'acme/widgets', 42],
+      [
+        'https://forgejo.example/api/v1/repos/acme/widgets/pulls/42',
+        'acme/widgets',
+        42,
+      ],
+      // A host served under a path prefix.
+      ['https://example.test/forge/acme/widgets/pulls/7', 'acme/widgets', 7],
+      // The sub-pages a reviewer actually copies out of the browser.
+      [
+        'https://forgejo.example/acme/widgets/pulls/42/files',
+        'acme/widgets',
+        42,
+      ],
+      [
+        'https://forgejo.example/acme/widgets/pulls/42/commits',
+        'acme/widgets',
+        42,
+      ],
+      // Query and fragment live outside the path and are simply not consulted.
+      [
+        'https://forgejo.example/acme/widgets/pulls/42?tab=files#issuecomment-9',
+        'acme/widgets',
+        42,
+      ],
+      // A repository named `pulls` must not capture the match.
+      ['https://forgejo.example/acme/pulls/pulls/3', 'acme/pulls', 3],
+      ['http://127.0.0.1:3000/acme/widgets/pulls/1', 'acme/widgets', 1],
+    ];
+    for (const [url, fullName, number] of cases) {
+      const target = parsePullTarget(url);
+      expect(target.repo?.fullName, url).toBe(fullName);
+      expect(target.number, url).toBe(number);
+    }
+  });
+
+  it('leaves the repository unresolved for a bare number', () => {
+    expect(parsePullTarget('42')).toEqual({ repo: null, number: 42 });
+  });
+
+  it('keeps the original error for anything that is not a URL', () => {
+    // No scheme means no URL, so these never reach the URL branch and report
+    // exactly what they reported before URLs were accepted at all.
+    for (const raw of ['zero', '0', '-1', '4.2', 'acme/widgets#42']) {
+      expect(() => parsePullTarget(raw), raw).toThrow(
+        'Pull request number must be a positive integer',
+      );
+    }
+  });
+
+  it('refuses a URL it cannot address a pull request with', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'https://forgejo.example/acme/widgets',
+        'has no OWNER/REPO/pulls/NUMBER',
+      ],
+      [
+        'https://forgejo.example/acme/widgets/issues/42',
+        'has no OWNER/REPO/pulls/NUMBER',
+      ],
+      // Nothing before `pulls` to read a repository out of.
+      ['https://forgejo.example/pulls/42', 'has no OWNER/REPO/pulls/NUMBER'],
+      ['ftp://forgejo.example/acme/widgets/pulls/42', 'must use http or https'],
+      [
+        'https://user:secret@forgejo.example/acme/widgets/pulls/42',
+        'must not carry credentials',
+      ],
+      // URL parsing resolves the dot segments away, leaving nothing to read a
+      // repository out of.
+      [
+        'https://forgejo.example/acme/%2e%2e/pulls/42',
+        'has no OWNER/REPO/pulls/NUMBER',
+      ],
+      // An encoded separator survives normalization, so the repository parser
+      // is what refuses it.
+      [
+        'https://forgejo.example/acme/wid%2fgets/pulls/42',
+        'encoded path hazard',
+      ],
+      [
+        'https://forgejo.example/acme/wid%5cgets/pulls/42',
+        'encoded path hazard',
+      ],
+    ];
+    for (const [url, expected] of cases) {
+      expect(() => parsePullTarget(url), url).toThrow(expected);
+    }
+  });
+
+  it('resolves dot segments the way a browser would, not by string splitting', () => {
+    // `..` is removed by URL normalization before the path is read, so the
+    // target is the one the URL actually denotes rather than the one its
+    // literal text suggests.
+    const target = parsePullTarget(
+      'https://forgejo.example/acme/../other/widgets/pulls/42',
+    );
+    expect(target.repo?.fullName).toBe('other/widgets');
+    expect(target.number).toBe(42);
+  });
+
+  it('never leaks a credential from a rejected URL into the message', () => {
+    let message = '';
+    try {
+      parsePullTarget('https://user:secret@forgejo.example/a/b/pulls/1');
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).not.toContain('secret');
+  });
+});
 
 describe('normalized checks', () => {
   const cases: Array<{
