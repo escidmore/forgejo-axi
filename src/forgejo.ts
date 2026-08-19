@@ -8,7 +8,7 @@ import {
 } from './checks.js';
 import { appendPath, type ConnectionConfig } from './config.js';
 import { positiveInteger } from './args.js';
-import { ForgejoAxiError, usageError } from './errors.js';
+import { asForgejoError, ForgejoAxiError, usageError } from './errors.js';
 import {
   ForgejoHttpClient,
   redact,
@@ -16,6 +16,7 @@ import {
   type HttpResponse,
   type RequestInput,
 } from './http.js';
+import { evaluateReviewDecision, type ReviewDecision } from './reviews.js';
 
 interface ApiUser {
   login?: string;
@@ -192,6 +193,20 @@ export interface PullRequestIdentity {
   merged_at: string | null;
   merged_by: string | null;
 }
+
+/**
+ * The `pr list` fields Forgejo's list route does not carry, each fetched per
+ * row only when asked for. Null means the fetch for that row failed and the
+ * value is unknown, which is never the same as a definite state.
+ */
+export interface DerivedPullFields {
+  checks_state?: string | null;
+  checks_passes?: boolean | null;
+  review_decision?: ReviewDecision | null;
+}
+
+export interface PullRequestListRow
+  extends PullRequestIdentity, DerivedPullFields {}
 
 export interface LabelIdentity {
   id: number;
@@ -1616,6 +1631,81 @@ export class ForgejoService {
       updated: true,
       label: normalizeLabel(this.config, repo, response.data),
     };
+  }
+
+  /**
+   * The verdict of a pull request's reviews, without their inline comments.
+   *
+   * `listReviews` costs one further round trip per commented review because it
+   * returns those comments. A list only needs the verdict, so this reads the
+   * reviews page and stops there: one request, whatever the review count.
+   */
+  async reviewDecision(
+    repo: RepositoryRef,
+    number: number,
+  ): Promise<ReviewDecision> {
+    const page = await this.http.paginate<ApiPullReview>(
+      `${repoPath(repo)}/pulls/${number}/reviews`,
+    );
+    return evaluateReviewDecision(
+      page.items.map((review) => ({
+        state: review.state ?? null,
+        dismissed: review.dismissed ?? false,
+        stale: review.stale ?? false,
+      })),
+    );
+  }
+
+  /**
+   * The per-row fields `pr list` cannot get from the list route, fetched only
+   * for the rows and fields actually asked for.
+   *
+   * A row whose own fetch fails yields null for that field and a recorded
+   * reason, rather than failing the whole list or -- worse -- reporting an
+   * unread field as if it had been read.
+   */
+  async derivedPullFields(
+    repo: RepositoryRef,
+    pull: PullRequestIdentity,
+    want: { checks: boolean; reviews: boolean },
+  ): Promise<{
+    values: DerivedPullFields;
+    failures: Array<{ number: number; field: string; reason: string }>;
+  }> {
+    const values: DerivedPullFields = {};
+    const failures: Array<{
+      number: number;
+      field: string;
+      reason: string;
+    }> = [];
+    if (want.checks) {
+      try {
+        const checks = await this.checksForPull(repo, pull);
+        values.checks_state = checks.state;
+        values.checks_passes = checks.passes;
+      } catch (error) {
+        values.checks_state = null;
+        values.checks_passes = null;
+        failures.push({
+          number: pull.number,
+          field: 'checks',
+          reason: asForgejoError(error).message,
+        });
+      }
+    }
+    if (want.reviews) {
+      try {
+        values.review_decision = await this.reviewDecision(repo, pull.number);
+      } catch (error) {
+        values.review_decision = null;
+        failures.push({
+          number: pull.number,
+          field: 'review_decision',
+          reason: asForgejoError(error).message,
+        });
+      }
+    }
+    return { values, failures };
   }
 
   private async checksForPull(
