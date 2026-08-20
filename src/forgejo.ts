@@ -1825,7 +1825,7 @@ export function parsePullTarget(raw: string): PullRequestTarget {
   try {
     url = new URL(raw);
   } catch {
-    throw usageError(`Pull request URL is not a valid URL: ${raw}`);
+    throw usageError('Pull request URL is not a valid URL');
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:')
     throw usageError('Pull request URL must use http or https');

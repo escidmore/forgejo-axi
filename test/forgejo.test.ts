@@ -138,13 +138,23 @@ describe('pull request addressing', () => {
   });
 
   it('never leaks a credential from a rejected URL into the message', () => {
-    let message = '';
-    try {
-      parsePullTarget('https://user:secret@forgejo.example/a/b/pulls/1');
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
+    const cases = [
+      [
+        'https://user:secret@forgejo.example/a/b/pulls/1',
+        'must not carry credentials',
+      ],
+      ['https://user:secret@', 'is not a valid URL'],
+    ];
+    for (const [raw, expected] of cases) {
+      let message = '';
+      try {
+        parsePullTarget(raw);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message, raw).toContain(expected);
+      expect(message, raw).not.toContain('secret');
     }
-    expect(message).not.toContain('secret');
   });
 });
 
