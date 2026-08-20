@@ -8,6 +8,7 @@ This document is the compatibility boundary for machine consumers. Additive obje
 forgejo-axi
 forgejo-axi --help
 forgejo-axi --version
+forgejo-axi setup hooks [--json]
 forgejo-axi status [connection flags]
 forgejo-axi repo view --repo OWNER/REPO [connection flags]
 forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
@@ -50,6 +51,8 @@ separate value beginning with `-` remains reserved for flags, except the exact
 `-`, such as a label named `-blocked`.
 
 For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim. Input that cannot be read, or whose bytes are not valid UTF-8, is refused with `BODY_FILE_ERROR` (exit `2`) before any request is made, because the invocation named an unusable body source rather than the host failing. No other command accepts `--body-file`: `issue create`, `issue edit`, and `issue comment` take `--body` only.
+
+`setup hooks` installs or repairs the Claude Code, Codex, and OpenCode session integrations beneath `HOME`/`USERPROFILE` without resolving Forgejo configuration, reading a token, or contacting a host. An entry point that is not an installed `forgejo-axi` binary is an exit-0 refusal, not a claimed installation. A write failure is `SETUP_FAILED` (exit `1`) and may occur after another target was successfully repaired; rerunning the command is the recovery path.
 
 Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. `--ca-file`/`FORGEJO_CA_FILE` supplies a replacement CA trust bundle, matching Node's TLS `ca` behavior; it does not append to the platform trust store.
 
@@ -97,6 +100,7 @@ Paginated responses include `page_info: {complete, pages, fetched, total, displa
 Additive fields are permitted. Nullable fields are emitted as `null`, not omitted, when listed below.
 
 - `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,runs,run_jobs,run_cancel,run_artifacts,probe:{source,complete}}}`.
+- `setup hooks`: `{hooks:{installed,entry_point,reason?},next}`. `installed=false` carries `reason:"entry_point_not_an_installed_binary"`; success carries `installed=true` and no `reason`.
 - `repo view`: `{repository:{full_name,url,api_url,description,private,archived,default_branch,has_actions,has_pull_requests,open_pull_requests}}`.
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
