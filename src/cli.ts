@@ -372,14 +372,22 @@ async function pullList(
   const visible = showAll ? page.items : page.items.slice(0, limit);
   const rows: PullRequestListRow[] = [];
   const failures: Array<{ number: number; field: string; reason: string }> = [];
-  for (const pull of visible) {
-    if (!want.checksState && !want.checksPasses && !want.reviews) {
-      rows.push(pull);
-      continue;
+  if (!want.checksState && !want.checksPasses && !want.reviews) {
+    rows.push(...visible);
+  } else {
+    const batchSize = showAll ? 4 : 1;
+    for (let start = 0; start < visible.length; start += batchSize) {
+      const enriched = await Promise.all(
+        visible.slice(start, start + batchSize).map(async (pull) => ({
+          pull,
+          derived: await service.derivedPullFields(repo, pull, want),
+        })),
+      );
+      for (const { pull, derived } of enriched) {
+        failures.push(...derived.failures);
+        rows.push({ ...pull, ...derived.values });
+      }
     }
-    const derived = await service.derivedPullFields(repo, pull, want);
-    failures.push(...derived.failures);
-    rows.push({ ...pull, ...derived.values });
   }
 
   const output = listOutput(

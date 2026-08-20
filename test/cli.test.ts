@@ -320,7 +320,9 @@ describe('CLI contract', () => {
       mergeable: true,
       merged: false,
     }));
-    const server = await startServer((_request, response, recorded) => {
+    let activeReviews = 0;
+    let maxConcurrentReviews = 0;
+    const server = await startServer(async (_request, response, recorded) => {
       const url = new URL(recorded.url, 'http://fake');
       const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
       const page = Number(url.searchParams.get('page') ?? '1');
@@ -341,6 +343,13 @@ describe('CLI contract', () => {
         return json(response, 200, { name: 'main' });
       }
       if (/^\/pulls\/\d+\/reviews$/.test(path)) {
+        activeReviews += 1;
+        maxConcurrentReviews = Math.max(maxConcurrentReviews, activeReviews);
+        const pullNumber = Number(path.split('/')[2]);
+        await new Promise((resolve) =>
+          setTimeout(resolve, (pulls.length + 1 - pullNumber) * 5),
+        );
+        activeReviews -= 1;
         return json(
           response,
           200,
@@ -417,6 +426,22 @@ describe('CLI contract', () => {
       .map((request) => /\/pulls\/(\d+)\/reviews/.exec(request.url)?.[1])
       .filter((value): value is string => value !== undefined);
     expect(fetchedNumbers).toEqual(['1', '2']);
+    expect(maxConcurrentReviews).toBe(1);
+
+    server.requests.length = 0;
+    maxConcurrentReviews = 0;
+    const complete = parseJson<{
+      pull_requests: Array<{ number: number; review_decision: string }>;
+      field_info: { failures: unknown[] };
+    }>(
+      (await invoke([...base, '--json', '--fields', 'number,review_decision']))
+        .output,
+    );
+    expect(complete.pull_requests.map(({ number }) => number)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(complete.field_info.failures).toEqual([]);
+    expect(maxConcurrentReviews).toBeGreaterThan(1);
   });
 
   it('reports a per-row field it could not read as unknown rather than a state', async () => {
