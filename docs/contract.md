@@ -13,22 +13,22 @@ forgejo-axi repo view --repo OWNER/REPO [connection flags]
 forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
 forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state STATE]
 forgejo-axi pr list --repo OWNER/REPO [--state STATE] [--limit N|--full] [--fields LIST|all]
-forgejo-axi pr view --repo OWNER/REPO NUMBER [--full]
-forgejo-axi pr history [overview|list|detail|soft-delete] --repo OWNER/REPO NUMBER [--comment-id ID] [--history-id ID] [--raw] [--yes]
-forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full]
-forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full]
+forgejo-axi pr view [--repo OWNER/REPO] NUMBER|URL [--full] [--fields LIST|all]
+forgejo-axi pr history [overview|list|detail|soft-delete] [--repo OWNER/REPO] NUMBER|URL [--comment-id ID] [--history-id ID] [--raw] [--yes]
+forgejo-axi pr reviews [--repo OWNER/REPO] NUMBER|URL [--limit N|--full]
+forgejo-axi pr diff [--repo OWNER/REPO] NUMBER|URL [--full]
 forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY | --body-file PATH|-] [--draft]
-forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed]
-forgejo-axi pr checks --repo OWNER/REPO NUMBER
-forgejo-axi pr mergeability --repo OWNER/REPO NUMBER
-forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merge|squash|rebase]
-forgejo-axi pr merged --repo OWNER/REPO NUMBER
+forgejo-axi pr update [--repo OWNER/REPO] NUMBER|URL [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed]
+forgejo-axi pr checks [--repo OWNER/REPO] NUMBER|URL
+forgejo-axi pr mergeability [--repo OWNER/REPO] NUMBER|URL
+forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase]
+forgejo-axi pr merged [--repo OWNER/REPO] NUMBER|URL
 forgejo-axi label list --repo OWNER/REPO [--limit N|--full]
 forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT]
 forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--description TEXT]
 forgejo-axi label delete --repo OWNER/REPO NAME
 forgejo-axi issue list --repo OWNER/REPO [--state open|closed|all] [--label NAMES] [--assignee USER] [--milestone NAME] [--limit N|--full] [--fields LIST|all]
-forgejo-axi issue view --repo OWNER/REPO NUMBER [--full]
+forgejo-axi issue view --repo OWNER/REPO NUMBER [--full] [--fields LIST|all]
 forgejo-axi issue history [overview|list|detail|soft-delete] --repo OWNER/REPO NUMBER [--comment-id ID] [--history-id ID] [--raw] [--yes]
 forgejo-axi issue create --repo OWNER/REPO --title TITLE [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME]
 forgejo-axi issue edit --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME]
@@ -36,7 +36,7 @@ forgejo-axi issue close --repo OWNER/REPO NUMBER [--comment TEXT]
 forgejo-axi issue reopen --repo OWNER/REPO NUMBER
 forgejo-axi issue comment --repo OWNER/REPO NUMBER --body TEXT
 forgejo-axi run list --repo OWNER/REPO [--status STATUS] [--branch BRANCH] [--limit N|--full] [--fields LIST|all]
-forgejo-axi run view --repo OWNER/REPO RUN_ID [--log|--log-failed]
+forgejo-axi run view --repo OWNER/REPO RUN_ID [--log|--log-failed] [--fields LIST|all]
 forgejo-axi run cancel --repo OWNER/REPO RUN_ID
 forgejo-axi run download --repo OWNER/REPO RUN_ID --dir DIR [--name NAME]
 ```
@@ -50,6 +50,10 @@ separate value beginning with `-` remains reserved for flags, except the exact
 `-`, such as a label named `-blocked`.
 
 For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim. Input that cannot be read, or whose bytes are not valid UTF-8, is refused with `BODY_FILE_ERROR` (exit `2`) before any request is made, because the invocation named an unusable body source rather than the host failing. No other command accepts `--body-file`: `issue create`, `issue edit`, and `issue comment` take `--body` only.
+
+A pull request `URL` supplies the repository and number for every command that accepts `NUMBER|URL`; it never changes the configured Forgejo base URL or where credentials are sent. The URL must use HTTP(S), contain no credentials, and carry an `OWNER/REPO/pulls/NUMBER` path, including beneath a path prefix or the API route. An explicit `--repo` may accompany a URL only when it names the same repository; a URL overrides `FORGEJO_REPOSITORY`.
+
+`--fields LIST|all` on `pr view`, `issue view`, and `run view` selects fields only from the command's primary `pull_request`, `issue`, or `run` object. Sibling comments, jobs, metadata, and hints are unchanged. Fields are emitted in requested order; a requested optional field that the host did not supply is omitted rather than fabricated as `null`. `all` selects every field that detail object can expose.
 
 Connection flags are `--base-url URL`, `--token-env NAME`, `--timeout-ms N`, `--ca-file PATH`, and `--json`. Environment defaults are `FORGEJO_BASE_URL`, `FORGEJO_REPOSITORY`, `FORGEJO_TIMEOUT_MS`, and `FORGEJO_CA_FILE`. `--ca-file`/`FORGEJO_CA_FILE` supplies a replacement CA trust bundle, matching Node's TLS `ca` behavior; it does not append to the platform trust store.
 
@@ -101,7 +105,7 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
 - `pr list`: `{pull_requests,page_info,next?,field_info?}`. Default rows are `{number,title,state,head}`; `--fields` selects other identity fields and `--fields all` selects every field from the list route, never the derived fields. The opt-in derived fields are `checks_state`, `checks_passes`, and `review_decision`. Naming any of them adds `field_info:{per_row_fields,rows_fetched,failures:[{number,field,reason}]}`; each failure names the exact requested field emitted as `null`. Enrichment is limited to displayed TOON rows, while `--full` and JSON enrich every fetched row.
-- `pr view`: `{pull_request:{...identity,body,body_length,body_truncated,edit_history_count},next?}`. `body` is a 500-Unicode-code-point preview by default and complete with `--full`; `body_length` is measured in Unicode code points. `edit_history_count` and the runnable `next` hint are present only when content history exists. The lookup is best-effort and never fails the view: a host without the content-history routes, or one that refuses or fails to answer them, returns the same document without those fields.
+- `pr view`: `{pull_request:{...identity,body,body_length,body_truncated,edit_history_count},next?}`. `body` is a 500-Unicode-code-point preview by default and complete with `--full`; `body_length` is measured in Unicode code points. `edit_history_count` and the runnable `next` hint are present only when content history exists. The lookup is best-effort and never fails the view: a host without the content-history routes, or one that refuses or fails to answer them, returns the same document without those fields. `--fields` narrows only `pull_request` under the detail-field rules above.
 - `pr history` and `issue history`: `overview` returns `{overview:{counts:[{comment_id,count}],total}}`; `list` returns `{comment_id,revisions:[{history_id,summary}]}` newest first; `detail` returns `{revision:{history_id,previous_history_id,can_soft_delete,before,after,diff_html?}}`; `soft-delete` returns `{deleted,already_deleted?,comment_id,history_id,message?}`. The default operation is `list` and the default comment id is `0`, the body. `before` and `after` are reconstructed from Forgejo's diff HTML with `gd` omitted from `after` and `gi` omitted from `before`; raw HTML is included only with `--raw`. Soft-delete requires `--yes`, never prompts, checks `can_soft_delete`, and exits `0` for an already-deleted no-op; a host that withholds that permission is refused with `CONTENT_HISTORY_DELETE_REFUSED` before anything is posted. A host too old to serve the routes reports `CONTENT_HISTORY_UNSUPPORTED`; a repository the web root itself cannot read reports `CONTENT_HISTORY_AUTHORIZATION`, since that interface authenticates by session rather than by API token and answers for a private repository with the same 404. A revision that does not exist on a host that does serve the routes is `CONTENT_HISTORY_NOT_FOUND`, and diff HTML that cannot be reconstructed is `CONTENT_HISTORY_MALFORMED_DIFF` rather than a silently partial `before` or `after`.
 - `pr create`: `{created,updated,pull_request}`. `pr update`: `{updated,pull_request}`. Existing desired state is exit-0 and mutation-free. Creation refuses with `PAGINATION_INCOMPLETE` if either its initial duplicate search or its post-conflict race-recovery search reaches the pagination ceiling without finding the pull request.
 - `pr checks`: `{checks}`; `pr mergeability`: `{mergeability}`; `pr merge` and `pr merged`: `{proof}`.
@@ -110,10 +114,10 @@ Additive fields are permitted. Nullable fields are emitted as `null`, not omitte
 - `label list`: `{labels,page_info,next?}`. A repository with no labels is `labels: []` with `page_info.fetched=0` and exit `0`.
 - `label create`: `{created,updated,label}`. `label edit`: `{updated,label}`. `label delete`: `{deleted,label}`.
 - `issue list`: `{issues,page_info,next?}`. Rows carry the selected identity fields, defaulting to `number,title,state,labels`. A repository with no matching issues is `issues: []` with `page_info.fetched=0` and exit `0`.
-- `issue view`: `{issue,comments,comment_info,next?}`. `issue` is an issue identity plus `body`, `body_length`, `body_truncated`, and `edit_history_count` when content history exists, on the same best-effort terms as `pr view`. `comment_info` is `{fetched,displayed,truncated}`; `next` includes a runnable history-list hint when the count is positive.
+- `issue view`: `{issue,comments,comment_info,next?}`. `issue` is an issue identity plus `body`, `body_length`, `body_truncated`, and `edit_history_count` when content history exists, on the same best-effort terms as `pr view`. `comment_info` is `{fetched,displayed,truncated}`; `next` includes a runnable history-list hint when the count is positive. `--fields` narrows only `issue` under the detail-field rules above.
 - `issue create`: `{issue}`. `issue edit`: `{updated,issue}`. `issue close` and `issue reopen`: `{updated,issue}`, plus `comment` when `--comment` posted one. `issue comment`: `{comment}`.
 - `run list`: `{runs,page_info,next?}`, sharing the `page_info` shape above. Rows carry the selected identity fields, defaulting to `id,title,status,branch`. A repository with no matching runs is `runs: []` with `page_info.fetched=0` and exit `0`.
-- `run view`: `{run,jobs,next?}`. `jobs` is an ordered array of job identities.
+- `run view`: `{run,jobs,next?}`. `jobs` is an ordered array of job identities. `--fields` narrows only `run` under the detail-field rules above.
 - `run cancel`: `{cancelled,run}`. `run download`: `{run_id,dir,downloaded}`, where `downloaded` rows are `{name,size_in_bytes,path}`.
 - Each `run` command returns the unsupported document described above, with `capability: "runs"`, when the host does not advertise the Actions runs API.
 

@@ -502,6 +502,196 @@ describe('CLI contract', () => {
     });
   });
 
+  it('addresses a pull request by URL and still calls the configured host', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
+        return json(response, 200, fixture.pull);
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+
+    // The URL names a host that is not the configured one. The repository and
+    // the number come from it; the request must not.
+    const result = await invoke([
+      'pr',
+      'view',
+      'https://elsewhere.example/acme/widgets/pulls/42',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    expect(
+      parseJson<{ pull_request: { number: number } }>(result.output),
+    ).toMatchObject({ pull_request: { number: 42 } });
+    // Every recorded request reached the configured server by construction,
+    // so what this pins is that the pull was fetched from it under the
+    // repository the URL named.
+    expect(server.requests.map((request) => request.url)).toContain(
+      '/api/v1/repos/acme/widgets/pulls/42',
+    );
+    expect(result.output).not.toContain('elsewhere.example');
+  });
+
+  it('refuses a --repo that contradicts the pull request URL', async () => {
+    const result = await invoke([
+      'pr',
+      'view',
+      'https://forgejo.example/acme/widgets/pulls/42',
+      '--repo',
+      'other/repo',
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson<{ error: string; help: string[] }>(result.output)).toEqual(
+      {
+        error:
+          '--repo other/repo contradicts the pull request URL (acme/widgets)',
+        code: 'VALIDATION_ERROR',
+        details: {},
+        help: ['Drop --repo, or pass the number instead of the URL'],
+      },
+    );
+  });
+
+  it('accepts a --repo that agrees with the pull request URL', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response) =>
+      json(response, 200, fixture.pull),
+    );
+    servers.push(server);
+    const result = await invoke([
+      'pr',
+      'view',
+      'https://forgejo.example/acme/widgets/pulls/42',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+  });
+
+  it('lets an explicit URL override an ambient FORGEJO_REPOSITORY', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
+        return json(response, 200, fixture.pull);
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const result = await invoke(
+      [
+        'pr',
+        'view',
+        'https://forgejo.example/acme/widgets/pulls/42',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ],
+      { FORGEJO_REPOSITORY: 'ambient/elsewhere' },
+    );
+    expect(result.exitCode).toBeUndefined();
+    expect(server.requests.map((request) => request.url)).toContain(
+      '/api/v1/repos/acme/widgets/pulls/42',
+    );
+  });
+
+  it('narrows pr view to the requested fields without changing their values', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response) =>
+      json(response, 200, fixture.pull),
+    );
+    servers.push(server);
+    const baseArgs = [
+      'pr',
+      'view',
+      '--repo',
+      'acme/widgets',
+      '42',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ];
+
+    const wide = parseJson<{ pull_request: Record<string, unknown> }>(
+      (await invoke(baseArgs)).output,
+    );
+    const narrow = parseJson<{ pull_request: Record<string, unknown> }>(
+      (await invoke([...baseArgs, '--fields', 'state,head_sha'])).output,
+    );
+    expect(Object.keys(narrow.pull_request)).toEqual(['state', 'head_sha']);
+    expect(narrow.pull_request['state']).toBe(wide.pull_request['state']);
+    expect(narrow.pull_request['head_sha']).toBe(wide.pull_request['head_sha']);
+
+    // `all` is the identity narrowing: same keys, same order, same values.
+    const all = parseJson<{ pull_request: Record<string, unknown> }>(
+      (await invoke([...baseArgs, '--fields', 'all'])).output,
+    );
+    expect(Object.keys(all.pull_request)).toEqual(
+      Object.keys(wide.pull_request),
+    );
+    expect(all.pull_request).toEqual(wide.pull_request);
+  });
+
+  it('omits a requested detail field the host does not supply', async () => {
+    const fixture = await loadFixture(15);
+    // No content-history route, so the view carries no edit_history_count and
+    // asking for it must not invent a null.
+    const server = await startServer((_request, response) =>
+      json(response, 200, fixture.pull),
+    );
+    servers.push(server);
+    const result = parseJson<{ pull_request: Record<string, unknown> }>(
+      (
+        await invoke([
+          'pr',
+          'view',
+          '--repo',
+          'acme/widgets',
+          '42',
+          '--base-url',
+          server.baseUrl,
+          '--json',
+          '--fields',
+          'number,edit_history_count',
+        ])
+      ).output,
+    );
+    expect(result.pull_request).toEqual({ number: 42 });
+  });
+
+  it('rejects an invalid or duplicated detail --fields value', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response) =>
+      json(response, 200, fixture.pull),
+    );
+    servers.push(server);
+    const cases: Array<[string, string]> = [
+      ['state,nope', 'Invalid or duplicate --fields value: state,nope'],
+      ['state,state', 'Invalid or duplicate --fields value: state,state'],
+    ];
+    for (const [value, expected] of cases) {
+      const result = await invoke([
+        'pr',
+        'view',
+        '--repo',
+        'acme/widgets',
+        '42',
+        '--base-url',
+        server.baseUrl,
+        '--fields',
+        value,
+        '--json',
+      ]);
+      expect(result.exitCode, value).toBe(2);
+      expect(result.output, value).toContain(expected);
+      expect(result.output, value).toContain('Valid fields:');
+    }
+  });
+
   it('caps raw paginated TOON output and supports --full', async () => {
     const rows = Array.from({ length: 35 }, (_, id) => ({ id }));
     const server = await startServer((_request, response) => {
