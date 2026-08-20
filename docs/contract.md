@@ -13,16 +13,16 @@ forgejo-axi repo view --repo OWNER/REPO [connection flags]
 forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
 forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state STATE]
 forgejo-axi pr list --repo OWNER/REPO [--state STATE] [--limit N|--full] [--fields LIST|all]
-forgejo-axi pr view --repo OWNER/REPO NUMBER [--full] [--fields LIST|all]
-forgejo-axi pr history [overview|list|detail|soft-delete] --repo OWNER/REPO NUMBER [--comment-id ID] [--history-id ID] [--raw] [--yes]
-forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full]
-forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full]
+forgejo-axi pr view [--repo OWNER/REPO] NUMBER|URL [--full] [--fields LIST|all]
+forgejo-axi pr history [overview|list|detail|soft-delete] [--repo OWNER/REPO] NUMBER|URL [--comment-id ID] [--history-id ID] [--raw] [--yes]
+forgejo-axi pr reviews [--repo OWNER/REPO] NUMBER|URL [--limit N|--full]
+forgejo-axi pr diff [--repo OWNER/REPO] NUMBER|URL [--full]
 forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY | --body-file PATH|-] [--draft]
-forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed]
-forgejo-axi pr checks --repo OWNER/REPO NUMBER
-forgejo-axi pr mergeability --repo OWNER/REPO NUMBER
-forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merge|squash|rebase]
-forgejo-axi pr merged --repo OWNER/REPO NUMBER
+forgejo-axi pr update [--repo OWNER/REPO] NUMBER|URL [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed]
+forgejo-axi pr checks [--repo OWNER/REPO] NUMBER|URL
+forgejo-axi pr mergeability [--repo OWNER/REPO] NUMBER|URL
+forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase]
+forgejo-axi pr merged [--repo OWNER/REPO] NUMBER|URL
 forgejo-axi label list --repo OWNER/REPO [--limit N|--full]
 forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT]
 forgejo-axi label edit --repo OWNER/REPO NAME [--name NEW] [--color HEX] [--description TEXT]
@@ -50,6 +50,8 @@ separate value beginning with `-` remains reserved for flags, except the exact
 `-`, such as a label named `-blocked`.
 
 For `pr create` and `pr update`, `--body` and `--body-file` are mutually exclusive. `--body-file PATH` reads a UTF-8 file and `--body-file -` reads stdin; body-file content is forwarded verbatim. Input that cannot be read, or whose bytes are not valid UTF-8, is refused with `BODY_FILE_ERROR` (exit `2`) before any request is made, because the invocation named an unusable body source rather than the host failing. No other command accepts `--body-file`: `issue create`, `issue edit`, and `issue comment` take `--body` only.
+
+A pull request `URL` supplies the repository and number for every command that accepts `NUMBER|URL`; it never changes the configured Forgejo base URL or where credentials are sent. The URL must use HTTP(S), contain no credentials, and carry an `OWNER/REPO/pulls/NUMBER` path, including beneath a path prefix or the API route. An explicit `--repo` may accompany a URL only when it names the same repository; a URL overrides `FORGEJO_REPOSITORY`.
 
 `--fields LIST|all` on `pr view`, `issue view`, and `run view` selects fields only from the command's primary `pull_request`, `issue`, or `run` object. Sibling comments, jobs, metadata, and hints are unchanged. Fields are emitted in requested order; a requested optional field that the host did not supply is omitted rather than fabricated as `null`. `all` selects every field that detail object can expose.
 

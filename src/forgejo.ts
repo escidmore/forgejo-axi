@@ -1794,6 +1794,63 @@ export function parsePullNumber(raw: string): number {
   return positiveInteger(raw, 'Pull request number');
 }
 
+/**
+ * A pull request addressed either by number, leaving the repository to
+ * `--repo`, or by a URL that carries the repository with it.
+ */
+export interface PullRequestTarget {
+  /** Null when the caller gave a bare number and the repository is elsewhere. */
+  repo: RepositoryRef | null;
+  number: number;
+}
+
+/**
+ * Accept the URL Forgejo prints for a pull request wherever a number is taken.
+ *
+ * A scheme is the discriminator, so anything without one still reaches
+ * `parsePullNumber` and fails with the same message it always did.
+ *
+ * The URL supplies the repository and the number and nothing else. Its host is
+ * deliberately ignored rather than adopted as the base URL: routing a
+ * credentialled request at whatever host appeared in an argument is the same
+ * hazard `CROSS_ORIGIN_REDIRECT` exists to refuse, and it would also break
+ * every host reached through a forward or a proxy, where the printed URL and
+ * the reachable one legitimately differ.
+ */
+export function parsePullTarget(raw: string): PullRequestTarget {
+  if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) {
+    return { repo: null, number: parsePullNumber(raw) };
+  }
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw usageError('Pull request URL is not a valid URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:')
+    throw usageError('Pull request URL must use http or https');
+  if (url.username !== '' || url.password !== '')
+    throw usageError('Pull request URL must not carry credentials');
+
+  // Scanned from the end so a repository named `pulls` cannot capture the
+  // match, and anchored on the `pulls/N` pair so the web form, the
+  // `/api/v1/repos/` form, a host served under a path prefix, and a trailing
+  // `/files` or `/commits` sub-page all resolve to the same target.
+  const segments = url.pathname.split('/').filter((segment) => segment !== '');
+  for (let index = segments.length - 2; index >= 2; index -= 1) {
+    if (segments[index] !== 'pulls') continue;
+    const candidate = segments[index + 1] ?? '';
+    if (!/^[1-9]\d*$/.test(candidate)) continue;
+    return {
+      repo: parseRepository(`${segments[index - 2]}/${segments[index - 1]}`),
+      number: parsePullNumber(candidate),
+    };
+  }
+  throw usageError(`Pull request URL has no OWNER/REPO/pulls/NUMBER: ${raw}`, [
+    'Expected a URL like https://forgejo.example/owner/repo/pulls/42',
+  ]);
+}
+
 export function parseIssueNumber(raw: string): number {
   return positiveInteger(raw, 'Issue number');
 }

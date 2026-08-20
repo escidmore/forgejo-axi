@@ -225,6 +225,10 @@ Commands:
   merge         Merge only the expected head and return merged proof
   merged        Return merged-state proof
 
+Wherever a command takes NUMBER it also accepts the pull request's URL, which
+carries the repository with it and makes --repo unnecessary. The request still
+goes to the configured base URL; the URL's host is never used to route it.
+
 Run `forgejo-axi pr <command> --help` for flags and examples.
 ```
 
@@ -262,7 +266,7 @@ Examples:
 forgejo-axi pr view — show canonical pull request identity and body
 
 Usage:
-  forgejo-axi pr view --repo OWNER/REPO NUMBER [--full] [--fields LIST|all] [connection flags]
+  forgejo-axi pr view [--repo OWNER/REPO] NUMBER|URL [--full] [--fields LIST|all] [connection flags]
 
 Flags:
   --full         Display the complete pull request body instead of its preview
@@ -272,7 +276,7 @@ A requested field the host does not supply is omitted, never emitted as null.
 
 Examples:
   forgejo-axi pr view --repo owner/repo 42 --full
-  forgejo-axi pr view --repo owner/repo 42 --fields state,head_sha
+  forgejo-axi pr view https://forgejo.example/owner/repo/pulls/42 --fields state,head_sha
 ```
 
 #### pr history
@@ -281,7 +285,7 @@ Examples:
 forgejo-axi pr history — inspect or soft-delete pull request content history
 
 Usage:
-  forgejo-axi pr history [overview|list|detail|soft-delete] --repo OWNER/REPO NUMBER [--comment-id ID] [--history-id ID] [--raw] [--yes] [connection flags]
+  forgejo-axi pr history [overview|list|detail|soft-delete] [--repo OWNER/REPO] NUMBER|URL [--comment-id ID] [--history-id ID] [--raw] [--yes] [connection flags]
 
 Commands:
   overview    Show edit counts for the body and comments
@@ -308,7 +312,7 @@ Examples:
 forgejo-axi pr reviews — list reviews with their inline comments
 
 Usage:
-  forgejo-axi pr reviews --repo OWNER/REPO NUMBER [--limit N|--full] [connection flags]
+  forgejo-axi pr reviews [--repo OWNER/REPO] NUMBER|URL [--limit N|--full] [connection flags]
 
 Flags:
   --limit N   Display this many reviews instead of the default 30
@@ -324,7 +328,7 @@ Example:
 forgejo-axi pr diff — print the unified diff
 
 Usage:
-  forgejo-axi pr diff --repo OWNER/REPO NUMBER [--full] [connection flags]
+  forgejo-axi pr diff [--repo OWNER/REPO] NUMBER|URL [--full] [connection flags]
 
 Flags:
   --full   Print every line instead of the first 30
@@ -360,7 +364,7 @@ Examples:
 forgejo-axi pr update — idempotently update a pull request
 
 Usage:
-  forgejo-axi pr update --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed] [connection flags]
+  forgejo-axi pr update [--repo OWNER/REPO] NUMBER|URL [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed] [connection flags]
 
 Flags:
   --body BODY           Pull request body text
@@ -380,7 +384,7 @@ Examples:
 forgejo-axi pr checks — normalize statuses and required contexts
 
 Usage:
-  forgejo-axi pr checks --repo OWNER/REPO NUMBER [connection flags]
+  forgejo-axi pr checks [--repo OWNER/REPO] NUMBER|URL [connection flags]
 
 Example:
   forgejo-axi pr checks --repo owner/repo 42 --json
@@ -392,7 +396,7 @@ Example:
 forgejo-axi pr mergeability — evaluate mergeability and required checks
 
 Usage:
-  forgejo-axi pr mergeability --repo OWNER/REPO NUMBER [connection flags]
+  forgejo-axi pr mergeability [--repo OWNER/REPO] NUMBER|URL [connection flags]
 
 Example:
   forgejo-axi pr mergeability --repo owner/repo 42
@@ -404,7 +408,7 @@ Example:
 forgejo-axi pr merge — expected-head merge with merged-state proof
 
 Usage:
-  forgejo-axi pr merge --repo OWNER/REPO NUMBER --expected-head SHA [--method merge|squash|rebase] [connection flags]
+  forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase] [connection flags]
 
 Example:
   forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash
@@ -416,7 +420,7 @@ Example:
 forgejo-axi pr merged — return merged-state proof
 
 Usage:
-  forgejo-axi pr merged --repo OWNER/REPO NUMBER [connection flags]
+  forgejo-axi pr merged [--repo OWNER/REPO] NUMBER|URL [connection flags]
 
 Example:
   forgejo-axi pr merged --repo owner/repo 42

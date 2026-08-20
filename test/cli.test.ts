@@ -310,6 +310,103 @@ describe('CLI contract', () => {
     });
   });
 
+  it('addresses a pull request by URL and still calls the configured host', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
+        return json(response, 200, fixture.pull);
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+
+    // The URL names a host that is not the configured one. The repository and
+    // the number come from it; the request must not.
+    const result = await invoke([
+      'pr',
+      'view',
+      'https://elsewhere.example/acme/widgets/pulls/42',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    expect(
+      parseJson<{ pull_request: { number: number } }>(result.output),
+    ).toMatchObject({ pull_request: { number: 42 } });
+    // Every recorded request reached the configured server by construction,
+    // so what this pins is that the pull was fetched from it under the
+    // repository the URL named.
+    expect(server.requests.map((request) => request.url)).toContain(
+      '/api/v1/repos/acme/widgets/pulls/42',
+    );
+    expect(result.output).not.toContain('elsewhere.example');
+  });
+
+  it('refuses a --repo that contradicts the pull request URL', async () => {
+    const result = await invoke([
+      'pr',
+      'view',
+      'https://forgejo.example/acme/widgets/pulls/42',
+      '--repo',
+      'other/repo',
+      '--json',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson<{ error: string; help: string[] }>(result.output)).toEqual(
+      {
+        error:
+          '--repo other/repo contradicts the pull request URL (acme/widgets)',
+        code: 'VALIDATION_ERROR',
+        details: {},
+        help: ['Drop --repo, or pass the number instead of the URL'],
+      },
+    );
+  });
+
+  it('accepts a --repo that agrees with the pull request URL', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response) =>
+      json(response, 200, fixture.pull),
+    );
+    servers.push(server);
+    const result = await invoke([
+      'pr',
+      'view',
+      'https://forgejo.example/acme/widgets/pulls/42',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+  });
+
+  it('lets an explicit URL override an ambient FORGEJO_REPOSITORY', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
+        return json(response, 200, fixture.pull);
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const result = await invoke(
+      [
+        'pr',
+        'view',
+        'https://forgejo.example/acme/widgets/pulls/42',
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ],
+      { FORGEJO_REPOSITORY: 'ambient/elsewhere' },
+    );
+    expect(result.exitCode).toBeUndefined();
+    expect(server.requests.map((request) => request.url)).toContain(
+      '/api/v1/repos/acme/widgets/pulls/42',
+    );
+  });
+
   it('narrows pr view to the requested fields without changing their values', async () => {
     const fixture = await loadFixture(15);
     const server = await startServer((_request, response) =>
