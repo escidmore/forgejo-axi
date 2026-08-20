@@ -138,7 +138,7 @@ describe('pull request addressing', () => {
   });
 
   it('never leaks a credential from a rejected URL into the message', () => {
-    const cases = [
+    const cases: Array<[string, string]> = [
       [
         'https://user:secret@forgejo.example/a/b/pulls/1',
         'must not carry credentials',

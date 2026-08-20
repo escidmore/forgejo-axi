@@ -266,14 +266,17 @@ Examples:
 forgejo-axi pr view — show canonical pull request identity and body
 
 Usage:
-  forgejo-axi pr view [--repo OWNER/REPO] NUMBER|URL [--full] [connection flags]
+  forgejo-axi pr view [--repo OWNER/REPO] NUMBER|URL [--full] [--fields LIST|all] [connection flags]
 
 Flags:
-  --full  Display the complete pull request body instead of its preview
+  --full         Display the complete pull request body instead of its preview
+  --fields LIST  Comma-separated fields to keep; defaults to every field
+
+A requested field the host does not supply is omitted, never emitted as null.
 
 Examples:
   forgejo-axi pr view --repo owner/repo 42 --full
-  forgejo-axi pr view https://forgejo.example/owner/repo/pulls/42
+  forgejo-axi pr view https://forgejo.example/owner/repo/pulls/42 --fields state,head_sha
 ```
 
 #### pr history
@@ -542,13 +545,17 @@ Examples:
 forgejo-axi issue view — show an issue with its comment thread
 
 Usage:
-  forgejo-axi issue view --repo OWNER/REPO NUMBER [--full] [connection flags]
+  forgejo-axi issue view --repo OWNER/REPO NUMBER [--full] [--fields LIST|all] [connection flags]
 
 Flags:
-  --full  Display complete bodies and every comment instead of previews
+  --full         Display complete bodies and every comment instead of previews
+  --fields LIST  Comma-separated issue fields to keep; defaults to every field
 
-Example:
+--fields narrows the issue object only; the comment thread is unaffected.
+
+Examples:
   forgejo-axi issue view --repo owner/repo 7 --full
+  forgejo-axi issue view --repo owner/repo 7 --fields state,labels
 ```
 
 #### issue history
@@ -698,16 +705,19 @@ Example:
 forgejo-axi run view — show a run and its jobs
 
 Usage:
-  forgejo-axi run view --repo OWNER/REPO RUN_ID [--log|--log-failed] [connection flags]
+  forgejo-axi run view --repo OWNER/REPO RUN_ID [--log|--log-failed] [--fields LIST|all] [connection flags]
 
 Flags:
   --log          Fold every job's log into its job entry
   --log-failed   Fold only failed jobs' logs
+  --fields LIST  Comma-separated run fields to keep; defaults to every field
 
 Job logs are omitted, not errored, when the host does not advertise job logs.
+--fields narrows the run object only; the job list is unaffected.
 
-Example:
+Examples:
   forgejo-axi run view --repo owner/repo 42 --log-failed
+  forgejo-axi run view --repo owner/repo 42 --fields status,head_sha
 ```
 
 #### run cancel

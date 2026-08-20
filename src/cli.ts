@@ -373,20 +373,26 @@ async function pullRead(
     args,
     withFlags({
       '--repo': 'value',
-      ...(command === 'view' ? { '--full': 'boolean' as const } : {}),
+      ...(command === 'view'
+        ? { '--full': 'boolean' as const, '--fields': 'value' as const }
+        : {}),
     }),
     `pr ${command}`,
   );
   const { repo, number } = resolvePullTarget(parsed, env);
   const service = await serviceFor(parsed, env);
   if (command === 'view') {
+    const fields = chooseDetailFields(
+      stringFlag(parsed, '--fields'),
+      PULL_DETAIL_FIELDS,
+    );
     const pullRequest = await service.viewPull(
       repo,
       number,
       boolFlag(parsed, '--full'),
     );
     return {
-      pull_request: pullRequest,
+      pull_request: selectDetailFields(pullRequest, fields),
       ...(typeof pullRequest.edit_history_count === 'number' &&
       pullRequest.edit_history_count > 0
         ? { next: [historyHint('pr', repo, number)] }
@@ -775,12 +781,20 @@ async function issueView(
 ): Promise<Record<string, unknown>> {
   const parsed = parseArgs(
     args,
-    withFlags({ '--repo': 'value', '--full': 'boolean' }),
+    withFlags({
+      '--repo': 'value',
+      '--full': 'boolean',
+      '--fields': 'value',
+    }),
     'issue view',
   );
   const number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
   const repo = resolveRepo(parsed, env);
   const full = boolFlag(parsed, '--full');
+  const fields = chooseDetailFields(
+    stringFlag(parsed, '--fields'),
+    ISSUE_DETAIL_FIELDS,
+  );
   const service = await serviceFor(parsed, env);
   const { issue, comments } = await service.viewIssue(repo, number, full);
   const showAll = full || boolFlag(parsed, '--json');
@@ -797,7 +811,7 @@ async function issueView(
     next.push(historyHint('issue', repo, number));
   }
   return {
-    issue,
+    issue: selectDetailFields(issue, fields),
     comments: displayed,
     comment_info: {
       fetched: comments.length,
@@ -1078,6 +1092,7 @@ async function runView(
       '--repo': 'value',
       '--log': 'boolean',
       '--log-failed': 'boolean',
+      '--fields': 'value',
     }),
     'run view',
   );
@@ -1087,6 +1102,10 @@ async function runView(
   const wantLogFailed = boolFlag(parsed, '--log-failed');
   if (wantLog && wantLogFailed)
     throw usageError('--log and --log-failed cannot be combined');
+  const fields = chooseDetailFields(
+    stringFlag(parsed, '--fields'),
+    RUN_DETAIL_FIELDS,
+  );
   const service = await serviceFor(parsed, env);
   const capabilities = await service.runCapabilities();
   if (!capabilities.runs) return unsupportedResult('runs');
@@ -1094,6 +1113,10 @@ async function runView(
   const log =
     requested !== 'none' && !capabilities.job_logs ? 'none' : requested;
   const result = await service.viewRun(repo, runId, log, capabilities.run_jobs);
+  const run = selectDetailFields(
+    result.run as unknown as Record<string, unknown>,
+    fields,
+  );
   const next = [
     ...(capabilities.run_jobs
       ? []
@@ -1102,7 +1125,7 @@ async function runView(
       ? ['Job logs are unsupported on this Forgejo host']
       : []),
   ];
-  return { ...result, ...(next.length > 0 ? { next } : {}) };
+  return { ...result, run, ...(next.length > 0 ? { next } : {}) };
 }
 
 async function runCancel(
@@ -1295,6 +1318,28 @@ const DEFAULT_RUN_LIST_FIELDS: ReadonlyArray<keyof RunIdentity> = [
   'branch',
 ];
 
+/**
+ * Field catalogs for the detail views, in the order those views emit them, so
+ * `--fields all` reproduces an unnarrowed view exactly. A detail view carries
+ * fields a list does not: the body preview on both `pr view` and `issue view`,
+ * and `edit_history_count` on hosts that serve content history.
+ */
+const PULL_DETAIL_FIELDS: readonly string[] = [
+  ...PULL_IDENTITY_FIELDS,
+  'body',
+  'body_length',
+  'body_truncated',
+  'edit_history_count',
+];
+const ISSUE_DETAIL_FIELDS: readonly string[] = [
+  ...ISSUE_IDENTITY_FIELDS,
+  'body',
+  'body_length',
+  'body_truncated',
+  'edit_history_count',
+];
+const RUN_DETAIL_FIELDS: readonly string[] = [...RUN_IDENTITY_FIELDS];
+
 function rejectDisplayFlagConflicts(
   full: boolean,
   requestedLimit: string | undefined,
@@ -1341,6 +1386,48 @@ function selectFields<T extends object>(
   fields: ReadonlyArray<keyof T & string>,
 ): Record<string, unknown> {
   return Object.fromEntries(fields.map((field) => [field, row[field]]));
+}
+
+/**
+ * Detail-view counterpart of `chooseFields`. An absent `--fields` narrows
+ * nothing, because a detail view's field set is not fixed: `edit_history_count`
+ * is present only on hosts that serve content history, so there is no static
+ * default list that could stand for "whatever this view returned".
+ */
+function chooseDetailFields(
+  raw: string | undefined,
+  all: readonly string[],
+): readonly string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === 'all') return all;
+  const fields = raw.split(',');
+  if (
+    fields.some(
+      (field, index) => !all.includes(field) || fields.indexOf(field) !== index,
+    )
+  ) {
+    throw usageError(`Invalid or duplicate --fields value: ${raw}`, [
+      `Valid fields: ${all.join(',')},all`,
+    ]);
+  }
+  return fields;
+}
+
+/**
+ * Narrow a detail view to the requested fields. A requested field the host did
+ * not supply is omitted rather than emitted as null, so a narrowed view says
+ * exactly what an unnarrowed one would have said about that field.
+ */
+function selectDetailFields(
+  row: Record<string, unknown>,
+  fields: readonly string[] | undefined,
+): Record<string, unknown> {
+  if (fields === undefined) return row;
+  return Object.fromEntries(
+    fields
+      .filter((field) => Object.hasOwn(row, field))
+      .map((field) => [field, row[field]]),
+  );
 }
 
 function listOutput<T>(
