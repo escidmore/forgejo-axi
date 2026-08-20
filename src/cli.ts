@@ -24,7 +24,7 @@ import {
   normalizeLabelColor,
   pageInfo,
   parseIssueNumber,
-  parsePullNumber,
+  parsePullTarget,
   parseRepository,
   parseRunId,
   type IssueIdentity,
@@ -487,10 +487,7 @@ async function pullRead(
     }),
     `pr ${command}`,
   );
-  const number = parsePullNumber(
-    requireOnePositional(parsed, 'pull request number'),
-  );
-  const repo = resolveRepo(parsed, env);
+  const { repo, number } = resolvePullTarget(parsed, env);
   const service = await serviceFor(parsed, env);
   if (command === 'view') {
     const fields = chooseDetailFields(
@@ -530,14 +527,11 @@ async function pullReviews(
     }),
     'pr reviews',
   );
-  const number = parsePullNumber(
-    requireOnePositional(parsed, 'pull request number'),
-  );
+  const { repo, number } = resolvePullTarget(parsed, env);
   const full = boolFlag(parsed, '--full');
   const requestedLimit = stringFlag(parsed, '--limit');
   const json = boolFlag(parsed, '--json');
   rejectDisplayFlagConflicts(full, requestedLimit, json);
-  const repo = resolveRepo(parsed, env);
   const service = await serviceFor(parsed, env);
   const page = await service.listReviews(repo, number, full);
   const showAll = full || json;
@@ -556,10 +550,7 @@ async function pullDiff(
     withFlags({ '--repo': 'value', '--full': 'boolean' }),
     'pr diff',
   );
-  const number = parsePullNumber(
-    requireOnePositional(parsed, 'pull request number'),
-  );
-  const repo = resolveRepo(parsed, env);
+  const { repo, number } = resolvePullTarget(parsed, env);
   const service = await serviceFor(parsed, env);
   const diff = await service.diffPull(repo, number);
   const showAll = boolFlag(parsed, '--full') || boolFlag(parsed, '--json');
@@ -640,10 +631,7 @@ async function pullUpdate(
     }),
     'pr update',
   );
-  const number = parsePullNumber(
-    requireOnePositional(parsed, 'pull request number'),
-  );
-  const repo = resolveRepo(parsed, env);
+  const { repo, number } = resolvePullTarget(parsed, env);
   const state = stringFlag(parsed, '--state');
   if (state !== undefined) stateFlag(state, false);
   const title = stringFlag(parsed, '--title');
@@ -719,10 +707,7 @@ async function pullMerge(
     }),
     'pr merge',
   );
-  const number = parsePullNumber(
-    requireOnePositional(parsed, 'pull request number'),
-  );
-  const repo = resolveRepo(parsed, env);
+  const { repo, number } = resolvePullTarget(parsed, env);
   const expectedHead = requireFlag(parsed, '--expected-head');
   const rawMethod = stringFlag(parsed, '--method') ?? 'merge';
   if (!['merge', 'squash', 'rebase'].includes(rawMethod)) {
@@ -995,11 +980,14 @@ async function contentHistoryRead(
   if (operation === 'soft-delete' && historyId === undefined)
     throw usageError('--history-id is required for soft-delete');
 
-  const number =
-    family === 'pr'
-      ? parsePullNumber(requireOnePositional(parsed, 'pull request number'))
-      : parseIssueNumber(requireOnePositional(parsed, 'issue number'));
-  const repo = resolveRepo(parsed, env);
+  let repo: RepositoryRef;
+  let number: number;
+  if (family === 'pr') {
+    ({ repo, number } = resolvePullTarget(parsed, env));
+  } else {
+    number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
+    repo = resolveRepo(parsed, env);
+  }
   const service = await serviceFor(parsed, env);
   if (operation === 'overview') {
     return { overview: await service.contentHistoryOverview(repo, number) };
@@ -1331,6 +1319,36 @@ function resolveRepo(
   if (!raw)
     throw usageError('--repo is required when FORGEJO_REPOSITORY is not set');
   return parseRepository(raw);
+}
+
+/**
+ * Resolve the repository and number for a pull request addressed by either
+ * form. A `--repo` that contradicts the URL is a usage error, because two
+ * explicit addresses disagreeing means one of them is wrong and guessing which
+ * would act on a repository the caller did not name. `FORGEJO_REPOSITORY` is
+ * ambient rather than explicit, so an explicit URL simply overrides it.
+ */
+function resolvePullTarget(
+  parsed: ParsedArgs,
+  env: NodeJS.ProcessEnv,
+): { repo: RepositoryRef; number: number } {
+  const target = parsePullTarget(
+    requireOnePositional(parsed, 'pull request number'),
+  );
+  if (target.repo === null) {
+    return { repo: resolveRepo(parsed, env), number: target.number };
+  }
+  const flagRepo = stringFlag(parsed, '--repo');
+  if (
+    flagRepo !== undefined &&
+    parseRepository(flagRepo).fullName !== target.repo.fullName
+  ) {
+    throw usageError(
+      `--repo ${flagRepo} contradicts the pull request URL (${target.repo.fullName})`,
+      ['Drop --repo, or pass the number instead of the URL'],
+    );
+  }
+  return { repo: target.repo, number: target.number };
 }
 
 function withFlags(flags: FlagSpec): FlagSpec {
