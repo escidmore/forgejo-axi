@@ -310,6 +310,198 @@ describe('CLI contract', () => {
     });
   });
 
+  it('fetches per-row list fields only when they are named, and only for shown rows', async () => {
+    const pulls = Array.from({ length: 4 }, (_, index) => ({
+      number: index + 1,
+      state: 'open',
+      title: `PR ${index + 1}`,
+      head: { ref: `branch-${index + 1}`, sha: `sha-${index + 1}` },
+      base: { ref: 'main' },
+      mergeable: true,
+      merged: false,
+    }));
+    let activeReviews = 0;
+    let maxConcurrentReviews = 0;
+    const server = await startServer(async (_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
+      const page = Number(url.searchParams.get('page') ?? '1');
+      if (path === '/pulls') {
+        response.setHeader('x-total-count', String(pulls.length));
+        return json(response, 200, page === 1 ? pulls : []);
+      }
+      if (path.startsWith('/statuses/')) {
+        return json(
+          response,
+          200,
+          page === 1
+            ? [{ status: 'success', context: 'ci/build', target_url: '' }]
+            : [],
+        );
+      }
+      if (path === '/branches/main') {
+        return json(response, 200, { name: 'main' });
+      }
+      if (/^\/pulls\/\d+\/reviews$/.test(path)) {
+        activeReviews += 1;
+        maxConcurrentReviews = Math.max(maxConcurrentReviews, activeReviews);
+        const pullNumber = Number(path.split('/')[2]);
+        await new Promise((resolve) =>
+          setTimeout(resolve, (pulls.length + 1 - pullNumber) * 5),
+        );
+        activeReviews -= 1;
+        return json(
+          response,
+          200,
+          page === 1
+            ? [
+                {
+                  id: 1,
+                  state: 'REQUEST_CHANGES',
+                  submitted_at: '2026-01-01T00:00:00Z',
+                  user: { login: 'reviewer' },
+                },
+                {
+                  id: 2,
+                  state: 'APPROVED',
+                  submitted_at: '2026-01-02T00:00:00Z',
+                  user: { login: 'reviewer' },
+                },
+              ]
+            : [],
+        );
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const base = [
+      'pr',
+      'list',
+      '--repo',
+      'acme/widgets',
+      '--base-url',
+      server.baseUrl,
+    ];
+
+    // Nothing derived is named, so nothing beyond the list route is fetched.
+    const plain = await invoke([...base, '--json']);
+    expect(plain.exitCode).toBeUndefined();
+    expect(parseJson<Record<string, unknown>>(plain.output)).not.toHaveProperty(
+      'field_info',
+    );
+    expect(
+      server.requests.every((request) => request.url.includes('/pulls?')),
+    ).toBe(true);
+
+    // `all` must stay a one-request call: expanding it into the per-row fields
+    // would turn an existing invocation into one request per row.
+    server.requests.length = 0;
+    const all = parseJson<{
+      pull_requests: Array<Record<string, unknown>>;
+    }>((await invoke([...base, '--json', '--fields', 'all'])).output);
+    expect(all.pull_requests[0]).not.toHaveProperty('checks_state');
+    expect(
+      server.requests.every((request) => request.url.includes('/pulls?')),
+    ).toBe(true);
+
+    // Named, and capped to the two displayed rows rather than all four fetched.
+    // --limit cannot be combined with --json, so this reads the TOON form.
+    server.requests.length = 0;
+    const limited = await invoke([
+      ...base,
+      '--limit',
+      '2',
+      '--fields',
+      'number,checks_state,checks_passes,review_decision',
+    ]);
+    expect(limited.exitCode).toBeUndefined();
+    expect(limited.output).toContain(
+      'pull_requests[2]{number,checks_state,checks_passes,review_decision}',
+    );
+    expect(limited.output).toContain('1,success,true,approved');
+    expect(limited.output).toContain('2,success,true,approved');
+    expect(limited.output).toContain('rows_fetched: 2');
+    expect(limited.output).toContain('failures: []');
+    const fetchedNumbers = server.requests
+      .map((request) => /\/pulls\/(\d+)\/reviews/.exec(request.url)?.[1])
+      .filter((value): value is string => value !== undefined);
+    expect(fetchedNumbers).toEqual(['1', '2']);
+    expect(maxConcurrentReviews).toBe(1);
+
+    server.requests.length = 0;
+    maxConcurrentReviews = 0;
+    const complete = parseJson<{
+      pull_requests: Array<{ number: number; review_decision: string }>;
+      field_info: { failures: unknown[] };
+    }>(
+      (await invoke([...base, '--json', '--fields', 'number,review_decision']))
+        .output,
+    );
+    expect(complete.pull_requests.map(({ number }) => number)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(complete.field_info.failures).toEqual([]);
+    expect(maxConcurrentReviews).toBeGreaterThan(1);
+  });
+
+  it('reports a per-row field it could not read as unknown rather than a state', async () => {
+    const pulls = [
+      {
+        number: 1,
+        state: 'open',
+        title: 'PR 1',
+        head: { ref: 'branch-1', sha: 'sha-1' },
+        base: { ref: 'gone', sha: 'sha-base' },
+        mergeable: true,
+        merged: false,
+      },
+    ];
+    const server = await startServer((_request, response, recorded) => {
+      const url = new URL(recorded.url, 'http://fake');
+      const path = url.pathname.replace('/api/v1/repos/acme/widgets', '');
+      const page = Number(url.searchParams.get('page') ?? '1');
+      if (path === '/pulls') {
+        response.setHeader('x-total-count', '1');
+        return json(response, 200, page === 1 ? pulls : []);
+      }
+      if (path.startsWith('/statuses/')) return json(response, 200, []);
+      // The base branch was deleted, which is the ordinary way this fetch
+      // fails on a real forge.
+      return json(response, 404, { message: 'branch does not exist' });
+    });
+    servers.push(server);
+    const result = parseJson<{
+      pull_requests: Array<Record<string, unknown>>;
+      field_info: { failures: Array<Record<string, unknown>> };
+    }>(
+      (
+        await invoke([
+          'pr',
+          'list',
+          '--repo',
+          'acme/widgets',
+          '--base-url',
+          server.baseUrl,
+          '--json',
+          '--fields',
+          'number,checks_state,review_decision',
+        ])
+      ).output,
+    );
+    // The whole list must not fail because one row could not be enriched, and
+    // null must not be readable as a definite state.
+    expect(result.pull_requests[0]).toMatchObject({
+      number: 1,
+      checks_state: null,
+      review_decision: null,
+    });
+    expect(result.field_info.failures).toHaveLength(2);
+    expect(result.field_info.failures[0]).toMatchObject({
+      number: 1,
+      field: 'checks_state',
+    });
+  });
+
   it('addresses a pull request by URL and still calls the configured host', async () => {
     const fixture = await loadFixture(15);
     const server = await startServer((_request, response, recorded) => {

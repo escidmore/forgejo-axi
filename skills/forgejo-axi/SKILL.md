@@ -254,11 +254,26 @@ Usage:
   forgejo-axi pr list --repo OWNER/REPO [--state open|closed|all] [--limit N|--full] [--fields LIST|all] [connection flags]
 
 Flags:
-  --fields LIST  Comma-separated identity fields; defaults to number,title,state,head
+  --fields LIST  Comma-separated fields; defaults to number,title,state,head
+
+Three fields are not on Forgejo's list route and cost extra requests per
+displayed row, so they are fetched only when named:
+  checks_state      Commit-status state for the head, as `pr checks` reports it
+  checks_passes     Whether those checks pass, required contexts included
+  review_decision   changes_requested|approved|stale|review_requested|commented|none
+
+`all` expands to the fields the list route itself returns and never to
+these three, so an existing --fields all call keeps costing one request.
+
+When any of them is requested the response carries field_info with the rows
+fetched and any row whose fetch failed. A failed row's field is null, which
+means unknown and never a state. Only displayed rows are fetched, so --limit
+and the default display cap bound the cost; --full and --json do not.
 
 Examples:
   forgejo-axi pr list --repo owner/repo
   forgejo-axi pr list --repo owner/repo --state all --full --fields all
+  forgejo-axi pr list --repo owner/repo --fields number,checks_passes,review_decision
 ```
 
 #### pr view

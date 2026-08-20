@@ -31,6 +31,7 @@ import {
   type IssueInput,
   type LabelInput,
   type PullRequestIdentity,
+  type PullRequestListRow,
   type RepositoryRef,
   type RunIdentity,
 } from './forgejo.js';
@@ -461,15 +462,61 @@ async function pullList(
   const page = await service.listPulls(repo, state);
   const limit = displayLimit(requestedLimit);
   const showAll = full || json;
-  const fields = chooseFields<PullRequestIdentity>(
+  const fields = chooseFields<PullRequestListRow>(
     stringFlag(parsed, '--fields'),
-    PULL_IDENTITY_FIELDS,
+    PULL_LIST_FIELDS,
     DEFAULT_PULL_LIST_FIELDS,
+    PULL_IDENTITY_FIELDS,
   );
-  const displayed = (showAll ? page.items : page.items.slice(0, limit)).map(
-    (pull) => selectFields(pull, fields),
+  const want = {
+    checksState: fields.includes('checks_state'),
+    checksPasses: fields.includes('checks_passes'),
+    reviews: fields.includes('review_decision'),
+  };
+
+  // Enrichment is per row, so it is done for the rows that will be displayed
+  // and no others. Fetching it for rows the caller asked not to see would be
+  // paid for and thrown away.
+  const visible = showAll ? page.items : page.items.slice(0, limit);
+  const rows: PullRequestListRow[] = [];
+  const failures: Array<{ number: number; field: string; reason: string }> = [];
+  if (!want.checksState && !want.checksPasses && !want.reviews) {
+    rows.push(...visible);
+  } else {
+    const batchSize = showAll ? 4 : 1;
+    for (let start = 0; start < visible.length; start += batchSize) {
+      const enriched = await Promise.all(
+        visible.slice(start, start + batchSize).map(async (pull) => ({
+          pull,
+          derived: await service.derivedPullFields(repo, pull, want),
+        })),
+      );
+      for (const { pull, derived } of enriched) {
+        failures.push(...derived.failures);
+        rows.push({ ...pull, ...derived.values });
+      }
+    }
+  }
+
+  const output = listOutput(
+    'pull_requests',
+    rows.map((row) => selectFields(row, fields)),
+    page,
+    showAll,
   );
-  return listOutput('pull_requests', displayed, page, showAll);
+  if (want.checksState || want.checksPasses || want.reviews) {
+    // The multiplier is the caller's to see: these fields cost requests per
+    // row, and a list that hid that would make a slow call look like a cheap
+    // one.
+    output['field_info'] = {
+      per_row_fields: fields.filter((field) =>
+        DERIVED_PULL_LIST_FIELDS.includes(field),
+      ),
+      rows_fetched: rows.length,
+      failures,
+    };
+  }
+  return output;
 }
 
 async function pullRead(
@@ -1378,7 +1425,20 @@ const PULL_IDENTITY_FIELDS: ReadonlyArray<keyof PullRequestIdentity> = [
   'merged_at',
   'merged_by',
 ];
-const DEFAULT_PULL_LIST_FIELDS: ReadonlyArray<keyof PullRequestIdentity> = [
+/**
+ * The `pr list` fields that are not on the list route's own response and cost
+ * a request per displayed row to fill in.
+ */
+const DERIVED_PULL_LIST_FIELDS: ReadonlyArray<keyof PullRequestListRow> = [
+  'checks_state',
+  'checks_passes',
+  'review_decision',
+];
+const PULL_LIST_FIELDS: ReadonlyArray<keyof PullRequestListRow> = [
+  ...PULL_IDENTITY_FIELDS,
+  ...DERIVED_PULL_LIST_FIELDS,
+];
+const DEFAULT_PULL_LIST_FIELDS: ReadonlyArray<keyof PullRequestListRow> = [
   'number',
   'title',
   'state',
@@ -1471,9 +1531,14 @@ function chooseFields<T extends object>(
   raw: string | undefined,
   all: ReadonlyArray<keyof T & string>,
   defaults: ReadonlyArray<keyof T & string>,
+  // What `all` expands to, when that is not the whole valid set. `pr list`
+  // keeps its per-row fields out of the expansion: they are valid names, but
+  // letting `all` pull them in would turn an existing one-request call into
+  // one request per row without the caller asking for it.
+  allExpansion: ReadonlyArray<keyof T & string> = all,
 ): ReadonlyArray<keyof T & string> {
   if (raw === undefined) return defaults;
-  if (raw === 'all') return all;
+  if (raw === 'all') return allExpansion;
   const fields = raw.split(',');
   if (
     fields.some(

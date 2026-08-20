@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { evaluateReviewDecision } from '../src/reviews.js';
 import {
   closeServers,
   connection,
@@ -699,5 +700,106 @@ describe('malformed review and diff responses', () => {
     const result = await invoke(['pr', 'diff', ...connection(server), '42']);
     expect(result.exitCode).toBe(1);
     expect(result.output).toContain('non-text diff response');
+  });
+});
+
+describe('review decision', () => {
+  const review = (
+    state: string | null,
+    extra: {
+      id?: number;
+      reviewer?: string;
+      submitted_at?: string;
+      dismissed?: boolean;
+      stale?: boolean;
+    } = {},
+  ) => ({
+    id: extra.id ?? null,
+    reviewer: extra.reviewer ?? null,
+    submitted_at: extra.submitted_at ?? null,
+    state,
+    dismissed: extra.dismissed ?? false,
+    stale: extra.stale ?? false,
+  });
+
+  it('has no reviews to report as none', () => {
+    expect(evaluateReviewDecision([])).toBe('none');
+  });
+
+  it('ranks a request for changes above an approval', () => {
+    expect(
+      evaluateReviewDecision([review('APPROVED'), review('REQUEST_CHANGES')]),
+    ).toBe('changes_requested');
+  });
+
+  it('reports an approval when nothing outranks it', () => {
+    expect(
+      evaluateReviewDecision([review('COMMENT'), review('APPROVED')]),
+    ).toBe('approved');
+  });
+
+  it("uses each reviewer's latest verdict", () => {
+    expect(
+      evaluateReviewDecision([
+        review('REQUEST_CHANGES', {
+          id: 1,
+          reviewer: 'alice',
+          submitted_at: '2026-01-01T00:00:00Z',
+        }),
+        review('APPROVED', {
+          id: 2,
+          reviewer: 'alice',
+          submitted_at: '2026-01-02T00:00:00Z',
+        }),
+      ]),
+    ).toBe('approved');
+  });
+
+  it('ignores a dismissed verdict entirely', () => {
+    expect(
+      evaluateReviewDecision([
+        review('REQUEST_CHANGES', { dismissed: true }),
+        review('APPROVED'),
+      ]),
+    ).toBe('approved');
+    expect(
+      evaluateReviewDecision([review('APPROVED', { dismissed: true })]),
+    ).toBe('none');
+  });
+
+  it('never reports a superseded verdict as current', () => {
+    // A stale approval is one left on an older commit. Reporting it as
+    // `approved` is the reading a caller is most likely to act on and least
+    // likely to re-check, which is the same error as calling a superseded
+    // check run passing.
+    expect(evaluateReviewDecision([review('APPROVED', { stale: true })])).toBe(
+      'stale',
+    );
+    expect(
+      evaluateReviewDecision([review('REQUEST_CHANGES', { stale: true })]),
+    ).toBe('stale');
+    // A fresh verdict alongside a stale one still decides.
+    expect(
+      evaluateReviewDecision([
+        review('APPROVED', { stale: true }),
+        review('REQUEST_CHANGES'),
+      ]),
+    ).toBe('changes_requested');
+  });
+
+  it('reports a pending request and a bare comment distinctly', () => {
+    expect(evaluateReviewDecision([review('REQUEST_REVIEW')])).toBe(
+      'review_requested',
+    );
+    expect(evaluateReviewDecision([review('COMMENT')])).toBe('commented');
+    expect(
+      evaluateReviewDecision([review('COMMENT'), review('REQUEST_REVIEW')]),
+    ).toBe('review_requested');
+  });
+
+  it('treats a state it does not know as no verdict', () => {
+    expect(
+      evaluateReviewDecision([review('SOMETHING_NEW'), review(null)]),
+    ).toBe('none');
   });
 });
