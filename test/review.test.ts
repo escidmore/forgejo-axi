@@ -706,8 +706,17 @@ describe('malformed review and diff responses', () => {
 describe('review decision', () => {
   const review = (
     state: string | null,
-    extra: { dismissed?: boolean; stale?: boolean } = {},
+    extra: {
+      id?: number;
+      reviewer?: string;
+      submitted_at?: string;
+      dismissed?: boolean;
+      stale?: boolean;
+    } = {},
   ) => ({
+    id: extra.id ?? null,
+    reviewer: extra.reviewer ?? null,
+    submitted_at: extra.submitted_at ?? null,
     state,
     dismissed: extra.dismissed ?? false,
     stale: extra.stale ?? false,
@@ -726,6 +735,23 @@ describe('review decision', () => {
   it('reports an approval when nothing outranks it', () => {
     expect(
       evaluateReviewDecision([review('COMMENT'), review('APPROVED')]),
+    ).toBe('approved');
+  });
+
+  it("uses each reviewer's latest verdict", () => {
+    expect(
+      evaluateReviewDecision([
+        review('REQUEST_CHANGES', {
+          id: 1,
+          reviewer: 'alice',
+          submitted_at: '2026-01-01T00:00:00Z',
+        }),
+        review('APPROVED', {
+          id: 2,
+          reviewer: 'alice',
+          submitted_at: '2026-01-02T00:00:00Z',
+        }),
+      ]),
     ).toBe('approved');
   });
 

@@ -361,9 +361,8 @@ async function pullList(
     PULL_IDENTITY_FIELDS,
   );
   const want = {
-    checks: fields.some(
-      (field) => field === 'checks_state' || field === 'checks_passes',
-    ),
+    checksState: fields.includes('checks_state'),
+    checksPasses: fields.includes('checks_passes'),
     reviews: fields.includes('review_decision'),
   };
 
@@ -374,7 +373,7 @@ async function pullList(
   const rows: PullRequestListRow[] = [];
   const failures: Array<{ number: number; field: string; reason: string }> = [];
   for (const pull of visible) {
-    if (!want.checks && !want.reviews) {
+    if (!want.checksState && !want.checksPasses && !want.reviews) {
       rows.push(pull);
       continue;
     }
@@ -389,7 +388,7 @@ async function pullList(
     page,
     showAll,
   );
-  if (want.checks || want.reviews) {
+  if (want.checksState || want.checksPasses || want.reviews) {
     // The multiplier is the caller's to see: these fields cost requests per
     // row, and a list that hid that would make a slow call look like a cheap
     // one.

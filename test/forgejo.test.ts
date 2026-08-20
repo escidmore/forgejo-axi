@@ -835,6 +835,32 @@ describe('malformed pull responses', () => {
   });
 });
 
+describe('review decision completeness', () => {
+  it('refuses to decide from incomplete review history', async () => {
+    const server = await startServer((_request, response, recorded) => {
+      const page = Number(
+        new URL(recorded.url, 'http://fake').searchParams.get('page'),
+      );
+      return json(
+        response,
+        200,
+        Array.from({ length: 50 }, (_, index) => ({
+          id: (page - 1) * 50 + index + 1,
+          state: 'COMMENT',
+        })),
+      );
+    });
+    servers.push(server);
+    const service = await serviceFor(server);
+
+    await expect(service.reviewDecision(repo, 42)).rejects.toMatchObject({
+      code: 'PAGINATION_INCOMPLETE',
+      details: { pages: 100, fetched: 5000 },
+    });
+    expect(server.requests).toHaveLength(100);
+  });
+});
+
 describe('pull search completeness', () => {
   it('reports an incomplete search when the pagination ceiling is reached', async () => {
     const server = await startServer((_request, response, recorded) => {

@@ -344,7 +344,22 @@ describe('CLI contract', () => {
         return json(
           response,
           200,
-          page === 1 ? [{ id: 1, state: 'APPROVED' }] : [],
+          page === 1
+            ? [
+                {
+                  id: 1,
+                  state: 'REQUEST_CHANGES',
+                  submitted_at: '2026-01-01T00:00:00Z',
+                  user: { login: 'reviewer' },
+                },
+                {
+                  id: 2,
+                  state: 'APPROVED',
+                  submitted_at: '2026-01-02T00:00:00Z',
+                  user: { login: 'reviewer' },
+                },
+              ]
+            : [],
         );
       }
       return json(response, 404, { message: 'not found' });
@@ -458,7 +473,7 @@ describe('CLI contract', () => {
     expect(result.field_info.failures).toHaveLength(2);
     expect(result.field_info.failures[0]).toMatchObject({
       number: 1,
-      field: 'checks',
+      field: 'checks_state',
     });
   });
 

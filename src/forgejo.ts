@@ -1638,7 +1638,7 @@ export class ForgejoService {
    *
    * `listReviews` costs one further round trip per commented review because it
    * returns those comments. A list only needs the verdict, so this reads the
-   * reviews page and stops there: one request, whatever the review count.
+   * review pages and stops there without fetching comments.
    */
   async reviewDecision(
     repo: RepositoryRef,
@@ -1647,8 +1647,18 @@ export class ForgejoService {
     const page = await this.http.paginate<ApiPullReview>(
       `${repoPath(repo)}/pulls/${number}/reviews`,
     );
+    if (!page.complete) {
+      throw new ForgejoAxiError(
+        'Pull request review search reached the pagination safety ceiling',
+        'PAGINATION_INCOMPLETE',
+        { details: { pages: page.pages, fetched: page.items.length } },
+      );
+    }
     return evaluateReviewDecision(
       page.items.map((review) => ({
+        id: review.id ?? null,
+        reviewer: review.user?.login ?? null,
+        submitted_at: timestampOrNull(review.submitted_at),
         state: review.state ?? null,
         dismissed: review.dismissed ?? false,
         stale: review.stale ?? false,
@@ -1667,7 +1677,7 @@ export class ForgejoService {
   async derivedPullFields(
     repo: RepositoryRef,
     pull: PullRequestIdentity,
-    want: { checks: boolean; reviews: boolean },
+    want: { checksState: boolean; checksPasses: boolean; reviews: boolean },
   ): Promise<{
     values: DerivedPullFields;
     failures: Array<{ number: number; field: string; reason: string }>;
@@ -1678,7 +1688,7 @@ export class ForgejoService {
       field: string;
       reason: string;
     }> = [];
-    if (want.checks) {
+    if (want.checksState || want.checksPasses) {
       try {
         const checks = await this.checksForPull(repo, pull);
         values.checks_state = checks.state;
@@ -1686,11 +1696,19 @@ export class ForgejoService {
       } catch (error) {
         values.checks_state = null;
         values.checks_passes = null;
-        failures.push({
-          number: pull.number,
-          field: 'checks',
-          reason: asForgejoError(error).message,
-        });
+        const reason = asForgejoError(error).message;
+        if (want.checksState)
+          failures.push({
+            number: pull.number,
+            field: 'checks_state',
+            reason,
+          });
+        if (want.checksPasses)
+          failures.push({
+            number: pull.number,
+            field: 'checks_passes',
+            reason,
+          });
       }
     }
     if (want.reviews) {
