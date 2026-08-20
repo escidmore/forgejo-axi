@@ -120,25 +120,29 @@ try {
     // on an earlier step having left dist/ behind.
     sh('npm', ['run', 'build'], { cwd: checkout });
     sh('npm', ['install', '--global', '--prefix', prefix, checkout]);
+    mkdirSync(home);
+    const env = unconfiguredEnv({
+      HOME: home,
+      XDG_CONFIG_HOME: join(home, '.config'),
+    });
     const { version } = JSON.parse(
       readFileSync(join(checkout, 'package.json'), 'utf8'),
     );
     assert(
-      sh(cli, ['--help']).stdout.includes('forgejo-axi'),
+      sh(cli, ['--help'], { env }).stdout.includes('forgejo-axi'),
       '--help printed no command catalog',
     );
     assert(
-      sh(cli, ['--version']).stdout.trim() === version,
+      sh(cli, ['--version'], { env }).stdout.trim() === version,
       `--version disagrees with package.json ${version}`,
     );
     assert(
-      sh(cli, []).stdout.includes('configured: false'),
+      sh(cli, [], { env }).stdout.includes('configured: false'),
       'the home view did not report unconfigured state',
     );
   });
 
   step(`${SKILLS_CLI} finds the skill in an isolated agent home`, () => {
-    mkdirSync(home);
     sh(
       'npx',
       [
