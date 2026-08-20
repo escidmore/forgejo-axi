@@ -6,6 +6,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) as scoped by
 [`docs/contract.md`](docs/contract.md): command names, field meanings, enum
 values, and exit semantics change only in a major release.
 
+## [1.3.0] - 2026-08-20
+
+### Added
+
+- `--fields LIST|all` on `pr view`, `issue view`, and `run view` to select
+  primary-object fields without changing sibling comments, jobs, or hints.
+- Pull request URL addressing across number-addressed `pr` commands. A URL
+  supplies repository identity and pull number while requests and credentials
+  remain bound to the configured Forgejo host.
+- `setup hooks` to install or repair session-start integration for Claude Code,
+  Codex, and OpenCode without requiring Forgejo configuration or network access.
+- Opt-in `checks_state`, `checks_passes`, and `review_decision` fields on
+  `pr list`, with per-row failure information when enrichment is unavailable.
+
+### Changed
+
+- Bare `--version`, `-v`, and `-V` invocations now return through a fast path
+  without loading the command graph.
+- `--full` and `--json` pull-list enrichment use bounded concurrency while
+  preserving source-row and failure order.
+
+### Fixed
+
+- Malformed pull request URLs no longer echo credential-bearing input in usage
+  errors.
+- Pull review decisions use each reviewer's latest verdict, refuse incomplete
+  review pagination, and report failures under the exact requested field names.
+
 ## [1.2.0] - 2026-08-16
 
 ### Added
@@ -61,7 +89,8 @@ First public release.
 - An Agent Skill at `skills/forgejo-axi/SKILL.md`, generated from the CLI's own
   help text and byte-checked against its sources.
 
-[unreleased]: https://github.com/escidmore/forgejo-axi/compare/v1.1.0...HEAD
+[unreleased]: https://github.com/escidmore/forgejo-axi/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.3.0
 [1.2.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.2.0
 [1.1.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.1.0
 [1.0.0]: https://github.com/escidmore/forgejo-axi/releases/tag/v1.0.0
