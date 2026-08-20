@@ -323,6 +323,31 @@ describe('issue command family', () => {
     ).toBe(false);
   });
 
+  it('narrows issue view to the requested fields and leaves the thread alone', async () => {
+    const world = await worldFor(16);
+    const server = await issueServer(world);
+    const args = ['issue', 'view', ...connection(server), '7'];
+
+    const wide = parseJson<{
+      issue: Record<string, unknown>;
+      comments: unknown[];
+    }>((await invoke(args)).output);
+    const narrow = parseJson<{
+      issue: Record<string, unknown>;
+      comments: unknown[];
+    }>((await invoke([...args, '--fields', 'number,state,labels'])).output);
+
+    expect(Object.keys(narrow.issue)).toEqual(['number', 'state', 'labels']);
+    expect(narrow.issue['state']).toBe(wide.issue['state']);
+    // --fields is scoped to the issue object; the comment thread is untouched.
+    expect(narrow.comments).toEqual(wide.comments);
+
+    const all = parseJson<{ issue: Record<string, unknown> }>(
+      (await invoke([...args, '--fields', 'all'])).output,
+    );
+    expect(all.issue).toEqual(wide.issue);
+  });
+
   it('previews long issue and comment bodies until --full', async () => {
     const world = await worldFor(16);
     const long = 'x'.repeat(600);
