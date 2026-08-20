@@ -147,6 +147,7 @@ Usage:
   forgejo-axi label <list|create|edit|delete> ...
   forgejo-axi issue <list|view|history|create|edit|close|reopen|comment> ...
   forgejo-axi run <list|view|cancel|download> ...
+  forgejo-axi setup hooks
 
 Connection flags:
   --base-url URL     Forgejo root URL; defaults to environment or hosts.json
@@ -750,4 +751,36 @@ Existing files are never overwritten; download fails instead.
 
 Example:
   forgejo-axi run download --repo owner/repo 42 --dir ./artifacts
+```
+
+### setup
+
+```text
+forgejo-axi setup — local agent integration
+
+Commands:
+  hooks   Install or repair the agent SessionStart hooks
+
+Nothing here reaches a Forgejo host: setup resolves no host and reads no
+credential, so it works before the CLI is configured.
+
+Run `forgejo-axi setup <command> --help` for flags and examples.
+```
+
+#### setup hooks
+
+```text
+forgejo-axi setup hooks — install or repair agent SessionStart hooks
+
+Usage:
+  forgejo-axi setup hooks [--json]
+
+Writes the SessionStart hook that gives Claude Code, Codex and OpenCode this
+tool's ambient context at the start of a session. Rerunning it is a no-op once
+the hook is current; it is the repair path as well as the install path.
+
+No host is contacted and no credential is read.
+
+Example:
+  forgejo-axi setup hooks
 ```
