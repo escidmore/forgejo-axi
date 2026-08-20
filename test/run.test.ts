@@ -287,6 +287,32 @@ describe('run command family', () => {
     });
   });
 
+  it('narrows run view to the requested fields and leaves the jobs alone', async () => {
+    const server = await runServer(await load<RunWorld>(16));
+    const args = ['run', 'view', ...connection(server), '9'];
+    const wide = parseJson<{
+      run: Record<string, unknown>;
+      jobs: unknown[];
+    }>((await invoke(args)).output);
+    const narrow = parseJson<{
+      run: Record<string, unknown>;
+      jobs: unknown[];
+    }>((await invoke([...args, '--fields', 'id,status,head_sha'])).output);
+
+    expect(narrow.run).toEqual({
+      id: 9,
+      status: 'success',
+      head_sha: 'def456',
+    });
+    // --fields is scoped to the run object; the job list is untouched.
+    expect(narrow.jobs).toEqual(wide.jobs);
+
+    const all = parseJson<{ run: Record<string, unknown> }>(
+      (await invoke([...args, '--fields', 'all'])).output,
+    );
+    expect(all.run).toEqual(wide.run);
+  });
+
   it('views a run with its jobs and canonical URLs', async () => {
     const server = await runServer(await load<RunWorld>(16));
     const viewed = parseJson<{
