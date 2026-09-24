@@ -1,5 +1,7 @@
 {
-  "version": { "version": "16.0.0+gitea-1.23.0" },
+  "version": {
+    "version": "16.0.0+gitea-1.23.0"
+  },
   "swagger": {
     "paths": {
       "/repos/{owner}/{repo}/pulls": {},
@@ -11,11 +13,18 @@
       "/repos/{owner}/{repo}/actions/runs/{run_id}": {},
       "/repos/{owner}/{repo}/actions/runs/{run_id}/jobs": {},
       "/repos/{owner}/{repo}/actions/runs/{run_id}/cancel": {},
-      "/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts": {}
+      "/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts": {},
+      "/user/repos": {},
+      "/orgs/{org}/repos": {},
+      "/repos/{owner}/{repo}": {}
     },
     "definitions": {
       "MergePullRequestOption": {
-        "properties": { "head_commit_id": { "type": "string" } }
+        "properties": {
+          "head_commit_id": {
+            "type": "string"
+          }
+        }
       }
     }
   },
@@ -26,12 +35,30 @@
       "color": "d73a4a",
       "description": "Something is broken"
     },
-    { "id": 8, "name": "enhancement", "color": "a2eeef", "description": "" },
-    { "id": 9, "name": "wontfix", "color": "ffffff", "description": "Declined" }
+    {
+      "id": 8,
+      "name": "enhancement",
+      "color": "a2eeef",
+      "description": ""
+    },
+    {
+      "id": 9,
+      "name": "wontfix",
+      "color": "ffffff",
+      "description": "Declined"
+    }
   ],
   "milestones": [
-    { "id": 3, "title": "v1.0", "state": "open" },
-    { "id": 4, "title": "v2.0", "state": "open" }
+    {
+      "id": 3,
+      "title": "v1.0",
+      "state": "open"
+    },
+    {
+      "id": 4,
+      "title": "v2.0",
+      "state": "open"
+    }
   ],
   "issue": {
     "number": 7,
@@ -46,10 +73,20 @@
         "description": "Something is broken"
       }
     ],
-    "assignees": [{ "login": "robot" }],
-    "milestone": { "id": 3, "title": "v1.0", "state": "open" },
+    "assignees": [
+      {
+        "login": "robot"
+      }
+    ],
+    "milestone": {
+      "id": 3,
+      "title": "v1.0",
+      "state": "open"
+    },
     "comments": 1,
-    "user": { "login": "reporter" },
+    "user": {
+      "login": "reporter"
+    },
     "created_at": "2026-01-01T00:00:00Z",
     "updated_at": "2026-01-02T00:00:00Z",
     "closed_at": null
@@ -58,7 +95,9 @@
     {
       "id": 101,
       "body": "Reproduced on this host",
-      "user": { "login": "robot" },
+      "user": {
+        "login": "robot"
+      },
       "created_at": "2026-01-02T00:00:00Z",
       "updated_at": "2026-01-02T00:00:00Z"
     }
@@ -69,8 +108,14 @@
     "draft": false,
     "title": "Fix race",
     "body": "Details",
-    "head": { "ref": "fix/race", "sha": "abc123" },
-    "base": { "ref": "main", "sha": "base123" },
+    "head": {
+      "ref": "fix/race",
+      "sha": "abc123"
+    },
+    "base": {
+      "ref": "main",
+      "sha": "base123"
+    },
     "mergeable": true,
     "merged": false,
     "merge_commit_sha": null,
@@ -89,12 +134,30 @@
     "stopped": "2026-01-03T00:05:00Z"
   },
   "jobs": [
-    { "id": 21, "run_id": 9, "name": "build", "status": "success" },
-    { "id": 22, "run_id": 9, "name": "test", "status": "failure" }
+    {
+      "id": 21,
+      "run_id": 9,
+      "name": "build",
+      "status": "success"
+    },
+    {
+      "id": 22,
+      "run_id": 9,
+      "name": "test",
+      "status": "failure"
+    }
   ],
   "artifacts": [
-    { "id": 31, "name": "coverage", "size_in_bytes": 1024 },
-    { "id": 32, "name": "bundle", "size_in_bytes": 2048 }
+    {
+      "id": 31,
+      "name": "coverage",
+      "size_in_bytes": 1024
+    },
+    {
+      "id": 32,
+      "name": "bundle",
+      "size_in_bytes": 2048
+    }
   ],
   "reviews": [
     {
@@ -107,7 +170,9 @@
       "dismissed": false,
       "comments_count": 0,
       "submitted_at": "2026-01-04T00:00:00Z",
-      "user": { "login": "reviewer-one" }
+      "user": {
+        "login": "reviewer-one"
+      }
     },
     {
       "id": 502,
@@ -119,7 +184,9 @@
       "dismissed": false,
       "comments_count": 2,
       "submitted_at": "2026-01-05T00:00:00Z",
-      "user": { "login": "reviewer-two" }
+      "user": {
+        "login": "reviewer-two"
+      }
     },
     {
       "id": 503,
@@ -131,7 +198,9 @@
       "dismissed": false,
       "comments_count": 0,
       "submitted_at": "0001-01-01T00:00:00Z",
-      "user": { "login": "reviewer-three" }
+      "user": {
+        "login": "reviewer-three"
+      }
     }
   ],
   "reviewComments": [
@@ -142,7 +211,9 @@
       "position": 12,
       "commit_id": "abc123",
       "diff_hunk": "@@ -8,6 +8,9 @@\n+  await lock.acquire();",
-      "user": { "login": "reviewer-two" },
+      "user": {
+        "login": "reviewer-two"
+      },
       "resolver": null,
       "created_at": "2026-01-05T00:00:00Z",
       "updated_at": "2026-01-05T00:00:00Z"
@@ -154,11 +225,114 @@
       "position": 40,
       "commit_id": "abc123",
       "diff_hunk": "@@ -38,3 +38,5 @@\n+  queue.drain();",
-      "user": { "login": "reviewer-two" },
-      "resolver": { "login": "reviewer-one" },
+      "user": {
+        "login": "reviewer-two"
+      },
+      "resolver": {
+        "login": "reviewer-one"
+      },
       "created_at": "2026-01-05T00:01:00Z",
       "updated_at": "2026-01-05T00:02:00Z"
     }
   ],
-  "diff": "diff --git a/src/worker.ts b/src/worker.ts\nindex 1111111..2222222 100644\n--- a/src/worker.ts\n+++ b/src/worker.ts\n@@ -8,6 +8,9 @@\n-  lock.acquire();\n+  await lock.acquire();\n"
+  "diff": "diff --git a/src/worker.ts b/src/worker.ts\nindex 1111111..2222222 100644\n--- a/src/worker.ts\n+++ b/src/worker.ts\n@@ -8,6 +8,9 @@\n-  lock.acquire();\n+  await lock.acquire();\n",
+  "repository": {
+    "id": 73144,
+    "owner": {
+      "id": 70422,
+      "login": "acme",
+      "login_name": "",
+      "source_id": 0,
+      "full_name": "Acme",
+      "email": "",
+      "avatar_url": "https://forgejo.example/avatars/acme",
+      "html_url": "https://forgejo.example/acme",
+      "language": "",
+      "is_admin": false,
+      "last_login": "0001-01-01T00:00:00Z",
+      "created": "2022-11-06T07:18:11+01:00",
+      "restricted": false,
+      "active": false,
+      "prohibit_login": false,
+      "location": "",
+      "pronouns": "",
+      "website": "https://forgejo.org",
+      "description": "Beyond coding. We forge.",
+      "visibility": "public",
+      "followers_count": 616,
+      "following_count": 0,
+      "starred_repos_count": 0,
+      "username": "acme"
+    },
+    "name": "widgets",
+    "full_name": "acme/widgets",
+    "description": "Widgets",
+    "empty": false,
+    "private": false,
+    "fork": false,
+    "template": false,
+    "parent": null,
+    "mirror": false,
+    "size": 381395,
+    "language": "Go",
+    "languages_url": "https://forgejo.example/api/v1/repos/acme/widgets/languages",
+    "html_url": "https://forgejo.example/acme/widgets",
+    "url": "https://forgejo.example/api/v1/repos/acme/widgets",
+    "link": "",
+    "ssh_url": "ssh://git@forgejo.example/acme/widgets.git",
+    "clone_url": "https://forgejo.example/acme/widgets.git",
+    "original_url": "",
+    "website": "",
+    "stars_count": 5513,
+    "forks_count": 961,
+    "watchers_count": 287,
+    "open_issues_count": 1510,
+    "open_pr_counter": 151,
+    "release_counter": 119,
+    "default_branch": "forgejo",
+    "archived": false,
+    "created_at": "2022-11-06T07:24:57+01:00",
+    "updated_at": "2026-09-20T00:53:04+02:00",
+    "archived_at": "1970-01-01T01:00:00+01:00",
+    "permissions": {
+      "admin": false,
+      "push": false,
+      "pull": true
+    },
+    "has_issues": true,
+    "internal_tracker": {
+      "enable_time_tracker": false,
+      "allow_only_contributors_to_track_time": true,
+      "enable_issue_dependencies": true
+    },
+    "has_wiki": false,
+    "has_wiki_contents": false,
+    "wiki_branch": "master",
+    "wiki_ssh_url": "ssh://git@forgejo.example/acme/widgets.wiki.git",
+    "wiki_clone_url": "https://forgejo.example/acme/widgets.wiki.git",
+    "globally_editable_wiki": false,
+    "has_pull_requests": true,
+    "has_projects": true,
+    "has_releases": true,
+    "has_packages": true,
+    "has_actions": true,
+    "ignore_whitespace_conflicts": false,
+    "allow_merge_commits": true,
+    "allow_rebase": true,
+    "allow_rebase_explicit": true,
+    "allow_squash_merge": true,
+    "allow_fast_forward_only_merge": false,
+    "allow_rebase_update": true,
+    "default_delete_branch_after_merge": true,
+    "default_merge_style": "squash",
+    "default_allow_maintainer_edit": true,
+    "default_update_style": "merge",
+    "avatar_url": "",
+    "internal": false,
+    "mirror_interval": "",
+    "object_format_name": "sha1",
+    "mirror_updated": "0001-01-01T00:00:00Z",
+    "repo_transfer": null,
+    "topics": []
+  }
 }

@@ -11,6 +11,7 @@ forgejo-axi --version
 forgejo-axi setup hooks [--json]
 forgejo-axi status [connection flags]
 forgejo-axi repo view --repo OWNER/REPO [connection flags]
+forgejo-axi repo create --repo OWNER/REPO (--private|--public) [--description TEXT] [--default-branch NAME] [connection flags]
 forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
 forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state STATE]
 forgejo-axi pr list --repo OWNER/REPO [--state STATE] [--limit N|--full] [--fields LIST|all]
@@ -103,9 +104,10 @@ Paginated responses include `page_info: {complete, pages, fetched, total, displa
 
 Additive fields are permitted. Nullable fields are emitted as `null`, not omitted, when listed below.
 
-- `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,runs,run_jobs,run_cancel,run_artifacts,probe:{source,complete}}}`.
+- `status`: `{host:{url,api_url}, auth:{configured,authenticated,source}, server:{version}, capabilities:{pull_requests,commit_statuses,branch_protection,expected_head_merge,actions_job_logs,runs,run_jobs,run_cancel,run_artifacts,repo_create,probe:{source,complete}}}`.
 - `setup hooks`: `{hooks:{installed,entry_point,reason?},next}`. `installed=false` carries `reason:"entry_point_not_an_installed_binary"`; success carries `installed=true` and no `reason`.
-- `repo view`: `{repository:{full_name,url,api_url,description,private,archived,default_branch,has_actions,has_pull_requests,open_pull_requests}}`.
+- `repo view`: `{repository}`, where a repository is `{full_name,url,api_url,clone_url,ssh_url,description,private,archived,empty,default_branch,has_actions,has_pull_requests,open_pull_requests}`. `url`, `api_url`, and `clone_url` are constructed from the configured canonical base URL and the requested identity, not trusted response links; `ssh_url` has no form the CLI can derive, so it is the host's own value, or `null` when the host reports none.
+- `repo create`: `{created,repository,differs}`. `created` is `true` only when this invocation made the repository. A repository already at `OWNER/REPO`, whether found before the request or behind a `409` the request provoked, is returned with `created=false`, exit `0`, and no mutation; `differs` lists each requested field the existing repository does not satisfy as `{field,requested,actual}`, covering `private` always and `default_branch` and `description` when requested, and is `[]` otherwise. The route is chosen from who the token is: an `OWNER` equal to the authenticated login, compared case-insensitively because Forgejo logins are, posts to `user/repos`, any other `OWNER` to `orgs/{OWNER}/repos`; nothing is inferred from the owner's name. Exactly one of `--private` or `--public` is required and refused as a usage error (exit `2`) otherwise, so visibility can never be defaulted. A `403` names the route in `details.route`; a `409` with no repository behind it stays `CONFLICT`. The command returns the unsupported document with `capability: "repo_create"` when the host does not advertise both creation routes.
 - `api` (single request): `{status,data}`. Paginated `api`: `{data,page_info,next?}`.
 - `pr find`: `{found,pull_request,search_info:{complete,pages,fetched,total}}`; `pull_request` is an identity or `null`.
 - `pr list`: `{pull_requests,page_info,next?,field_info?}`. Default rows are `{number,title,state,head}`; `--fields` selects other identity fields and `--fields all` selects every field from the list route, never the derived fields. The opt-in derived fields are `checks_state`, `checks_passes`, and `review_decision`. Naming any of them adds `field_info:{per_row_fields,rows_fetched,failures:[{number,field,reason}]}`; each failure names the exact requested field emitted as `null`. Enrichment is limited to displayed TOON rows, while `--full` and JSON enrich every fetched row.

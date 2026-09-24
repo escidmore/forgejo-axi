@@ -11,7 +11,7 @@ export const TOP_HELP = `forgejo-axi — ${DESCRIPTION}
 
 Usage:
   forgejo-axi status [connection flags]
-  forgejo-axi repo view --repo OWNER/REPO [connection flags]
+  forgejo-axi repo <view|create> ...
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
   forgejo-axi pr <find|list|view|history|reviews|diff|create|update|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
@@ -31,6 +31,15 @@ Examples:
   forgejo-axi pr checks --repo owner/repo 42
   forgejo-axi issue list --repo owner/repo --label bug
   forgejo-axi api GET repos/owner/repo
+`;
+
+const REPO_HELP = `forgejo-axi repo — repository identity and creation commands
+
+Commands:
+  view    Show repository identity and lifecycle features
+  create  Create a repository, or report the one already at that address
+
+Run \`forgejo-axi repo <command> --help\` for flags and examples.
 `;
 
 const PR_HELP = `forgejo-axi pr — pull request lifecycle commands
@@ -117,6 +126,7 @@ Run \`forgejo-axi setup <command> --help\` for flags and examples.
 `;
 
 export const FAMILY_HELP: Record<string, string> = {
+  repo: REPO_HELP,
   pr: PR_HELP,
   label: LABEL_HELP,
   issue: ISSUE_HELP,
@@ -128,6 +138,7 @@ export const HELP: Record<string, string> = {
   'setup hooks': `forgejo-axi setup hooks — install or repair agent SessionStart hooks\n\nUsage:\n  forgejo-axi setup hooks [--json]\n\nWrites the SessionStart hook that gives Claude Code, Codex and OpenCode this\ntool's ambient context at the start of a session. Rerunning it is a no-op once\nthe hook is current; it is the repair path as well as the install path.\n\nNo host is contacted and no credential is read.\n\nExample:\n  forgejo-axi setup hooks\n`,
   status: `forgejo-axi status — probe host, authentication, version, and capabilities\n\nUsage:\n  forgejo-axi status [connection flags]\n\nExample:\n  forgejo-axi status --base-url https://forgejo.example\n`,
   'repo view': `forgejo-axi repo view — show repository identity and lifecycle features\n\nUsage:\n  forgejo-axi repo view --repo OWNER/REPO [connection flags]\n\nExample:\n  forgejo-axi repo view --repo owner/repo\n`,
+  'repo create': `forgejo-axi repo create — create a repository, or report the one already there\n\nUsage:\n  forgejo-axi repo create --repo OWNER/REPO (--private|--public) [--description TEXT] [--default-branch NAME] [connection flags]\n\nFlags:\n  --private | --public   Visibility; exactly one is required, never defaulted\n  --description TEXT     Repository description\n  --default-branch NAME  Default branch name\n\nOWNER equal to the authenticated login creates under the user; any other OWNER\ncreates in that organization. A repository already at OWNER/REPO is returned\nwith created: false and never modified; differs lists requested fields it does\nnot satisfy: private always, default_branch and description when requested.\n\nExamples:\n  forgejo-axi repo create --repo owner/repo --private\n  forgejo-axi repo create --repo org/repo --public --description 'Docs' --default-branch main\n`,
   api: `forgejo-axi api — call a Forgejo API v1 path\n\nUsage:\n  forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]\n\nFlags:\n  --data JSON    JSON request body\n  --paginate     Fetch every array page (GET only)\n  --limit N      Display at most N fetched rows in TOON mode\n  --full         Display every fetched row in TOON mode\n\nExamples:\n  forgejo-axi api GET repos/owner/repo\n  forgejo-axi api GET repos/owner/repo/pulls --paginate --full\n  forgejo-axi api PATCH repos/owner/repo/pulls/4 --data '{"title":"New title"}'\n`,
   'pr find': `forgejo-axi pr find — find by head branch\n\nUsage:\n  forgejo-axi pr find --repo OWNER/REPO --head BRANCH [--base BRANCH] [--state open|closed|all] [connection flags]\n\nExample:\n  forgejo-axi pr find --repo owner/repo --head feature --base main\n`,
   'pr list': `forgejo-axi pr list — list pull requests\n\nUsage:\n  forgejo-axi pr list --repo OWNER/REPO [--state open|closed|all] [--limit N|--full] [--fields LIST|all] [connection flags]\n\nFlags:\n  --fields LIST  Comma-separated fields; defaults to number,title,state,head\n\nThree fields are not on Forgejo's list route and cost extra requests per\ndisplayed row, so they are fetched only when named:\n  checks_state      Commit-status state for the head, as \`pr checks\` reports it\n  checks_passes     Whether those checks pass, required contexts included\n  review_decision   changes_requested|approved|stale|review_requested|commented|none\n\n\`all\` expands to the fields the list route itself returns and never to\nthese three, so an existing --fields all call keeps costing one request.\n\nWhen any of them is requested the response carries field_info with the rows\nfetched and any row whose fetch failed. A failed row's field is null, which\nmeans unknown and never a state. Only displayed rows are fetched, so --limit\nand the default display cap bound the cost; --full and --json do not.\n\nExamples:\n  forgejo-axi pr list --repo owner/repo\n  forgejo-axi pr list --repo owner/repo --state all --full --fields all\n  forgejo-axi pr list --repo owner/repo --fields number,checks_passes,review_decision\n`,

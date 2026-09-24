@@ -71,6 +71,7 @@ Tokens resolve from `--token-env NAME`, then `FORGEJO_TOKEN_<HOST_KEY>`, then `F
 
 ```console
 forgejo-axi repo view --repo owner/repo
+forgejo-axi repo create --repo owner/repo --private
 forgejo-axi pr find --repo owner/repo --head feature --base main
 forgejo-axi pr list --repo owner/repo --fields number,title,state,head
 forgejo-axi pr view --repo owner/repo 42 --full
@@ -87,7 +88,7 @@ forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash
 forgejo-axi pr merged --repo owner/repo 42
 ```
 
-`pr create` and `pr update` reconcile existing state instead of duplicating mutations. Use either `--body` or `--body-file PATH|-`; file and stdin bodies are forwarded verbatim. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
+`repo create` requires an explicit `--private` or `--public`, routes to the user or the organization from who the token is rather than from the owner's name, and returns a repository that already exists with `created: false` and a `differs` list, covering visibility always and the default branch and description when requested, instead of changing it. `pr create` and `pr update` reconcile existing state instead of duplicating mutations. Use either `--body` or `--body-file PATH|-`; file and stdin bodies are forwarded verbatim. `pr merge` requires the expected head SHA and sends Forgejo's atomic `head_commit_id`; repeated calls return merged-state proof. Empty statuses are `reported: 0, state: none`, not success, and missing required contexts never pass.
 
 `pr reviews` and `pr diff` are read-only. Reviews come back with their verdicts and the inline comments anchored to the file and position each one marks, and the diff is the one the forge generates, so no pull ref has to be fetched. Submitting, dismissing, and deleting reviews stay on the `api` path.
 

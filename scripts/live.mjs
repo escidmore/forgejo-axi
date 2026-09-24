@@ -249,6 +249,14 @@ if (liveRepo.status !== 200 || liveRepo.data?.full_name !== REPO) {
 console.log(
   `host ${BASE_URL} — Forgejo ${version}, actions_job_logs=${probed.capabilities?.actions_job_logs}`,
 );
+// The login the lane token authenticates as. It is the one account the lane
+// can rely on for assignment and for the user creation route; the repository
+// owner may be an organisation, which cannot be assigned an issue.
+const ME = String((await raw('GET', 'user')).data?.login ?? '');
+if (!ME) {
+  console.error(`Refusing to mutate: ${BASE_URL} did not report a login`);
+  process.exit(2);
+}
 
 const BRANCH = `live-probe-${Date.now().toString(36)}`;
 const created = {
@@ -259,6 +267,7 @@ const created = {
   pulls: [],
   branches: [],
   protections: [],
+  repos: [],
 };
 
 // Every probe branch carries the per-run prefix, so cleanup can never reach a
@@ -544,11 +553,10 @@ try {
     'milestone filter narrows',
     excludesOther(repoCli(['issue', 'list', '--milestone', 'v-live'])),
   );
-  const owner = REPO.split('/')[0];
-  repoCli(['issue', 'edit', String(n), '--assignee', owner]);
+  repoCli(['issue', 'edit', String(n), '--assignee', ME]);
   ok(
     'assignee filter narrows',
-    excludesOther(repoCli(['issue', 'list', '--assignee', owner])),
+    excludesOther(repoCli(['issue', 'list', '--assignee', ME])),
   );
   ok(
     'state filter narrows',
@@ -618,6 +626,83 @@ try {
     'repo view reports canonical identity',
     repo.full_name === REPO &&
       repo.url === `${BASE_URL.replace(/\/$/, '')}/${REPO}`,
+  );
+
+  // ---- repo create -----------------------------------------------------------
+  // Both routes are driven: the lane repository's owner, and the authenticated
+  // login itself. When the lane repository belongs to that login the two
+  // collapse into one and only the user route is proven, which the note says.
+  const laneOwner = REPO.split('/')[0];
+  const owners =
+    laneOwner.toLowerCase() === ME.toLowerCase() ? [ME] : [laneOwner, ME];
+  for (const owner of owners) {
+    const target = `${owner}/${BRANCH}-repo`;
+    const route = owner === ME ? 'user' : 'organization';
+    const made = cli(
+      ['repo', 'create', '--repo', target, '--private', '--description', 'x'],
+      { allowFail: true },
+    );
+    // Track by address, not by `created`: a create that answered 409 still
+    // left a repository behind to delete.
+    if (made.repository || made.created !== undefined)
+      created.repos.push(target);
+    ok(
+      `repo create makes a ${route} repository`,
+      made.created === true &&
+        made.repository?.full_name === target &&
+        made.repository?.private === true,
+      String(made.error ?? made.repository?.full_name),
+    );
+    if (made.created !== true) continue;
+    const back = await raw('GET', `repos/${target}`);
+    ok(
+      `host serves the ${route} repository under that name`,
+      back.status === 200 &&
+        back.data?.full_name === target &&
+        back.data?.private === true,
+      `${back.status} ${back.data?.full_name ?? ''}`,
+    );
+    const again = cli(['repo', 'create', '--repo', target, '--private']);
+    ok(
+      `repo create on the existing ${route} repository is a no-op`,
+      again.created === false &&
+        Array.isArray(again.differs) &&
+        again.differs.length === 0 &&
+        again.repository?.full_name === target,
+      JSON.stringify(again.differs ?? again.error),
+    );
+    const flipped = cli(['repo', 'create', '--repo', target, '--public']);
+    const still = await raw('GET', `repos/${target}`);
+    ok(
+      `repo create reports a differing visibility rather than applying it (${route})`,
+      flipped.created === false &&
+        flipped.differs?.some(
+          (d) => d.field === 'private' && d.requested === false && d.actual,
+        ) &&
+        still.data?.private === true,
+      `${JSON.stringify(flipped.differs)} private=${still.data?.private}`,
+    );
+    const viewed = cli(['repo', 'view', '--repo', target]);
+    ok(
+      `repo view carries clone_url and ssh_url (${route})`,
+      viewed.repository?.clone_url ===
+        `${BASE_URL.replace(/\/$/, '')}/${target}.git` &&
+        typeof viewed.repository?.ssh_url === 'string' &&
+        new RegExp(
+          `[/:]${target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.git$`,
+        ).test(viewed.repository.ssh_url),
+      `${viewed.repository?.clone_url} ${viewed.repository?.ssh_url}`,
+    );
+  }
+  const unstated = `${ME}/${BRANCH}-unstated`;
+  const refusedCreate = cli(['repo', 'create', '--repo', unstated], {
+    allowFail: true,
+  });
+  const never = await raw('GET', `repos/${unstated}`);
+  ok(
+    'repo create refuses an unstated visibility before any request',
+    refusedCreate.code === 'VALIDATION_ERROR' && never.status === 404,
+    `${refusedCreate.code} ${never.status}`,
   );
 
   // ---- run family, no runner required ----------------------------------------
@@ -1584,6 +1669,18 @@ try {
     'cleanup removed every branch and its protection',
     leaked.length === 0,
     leaked.join(', ') || `${created.branches.length} branches`,
+  );
+  // A repository this run created is deleted by address. Every name carries
+  // the per-run prefix, so this can never reach one that predates the run.
+  const leakedRepos = [];
+  for (const target of created.repos) {
+    const gone = await discard('DELETE', `repos/${target}`);
+    if (gone.status !== 204) leakedRepos.push(`${target} (${gone.status})`);
+  }
+  ok(
+    'cleanup removed every created repository',
+    leakedRepos.length === 0,
+    leakedRepos.join(', ') || `${created.repos.length} repositories`,
   );
 }
 

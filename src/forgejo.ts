@@ -43,14 +43,18 @@ interface ApiPullRequest {
 }
 
 interface ApiRepository {
+  name?: string;
   full_name?: string;
+  owner?: ApiUser;
   description?: string;
   private?: boolean;
   archived?: boolean;
+  empty?: boolean;
   default_branch?: string;
   has_actions?: boolean;
   has_pull_requests?: boolean;
   open_pr_counter?: number;
+  ssh_url?: string;
 }
 
 interface ApiLabel {
@@ -215,6 +219,19 @@ export interface LabelIdentity {
   description: string;
   is_archived: boolean;
   api_url: string;
+}
+
+export interface RepoCreateInput {
+  private: boolean;
+  description?: string;
+  defaultBranch?: string;
+}
+
+/** One requested field the existing repository does not satisfy. */
+export interface RepositoryDifference {
+  field: string;
+  requested: unknown;
+  actual: unknown;
 }
 
 export interface LabelInput {
@@ -440,18 +457,137 @@ export class ForgejoService {
     const response = await this.http.api<ApiRepository>({
       path: repoPath(repo),
     });
-    const data = response.data;
+    return normalizeRepository(this.config, repo, response.data);
+  }
+
+  /** Whether the host advertises both repository-creation routes. */
+  async repoCreateSupported(): Promise<boolean> {
+    return (await this.probeCapabilities()).repo_create;
+  }
+
+  /** The login the configured token authenticates as. */
+  async currentUser(): Promise<string> {
+    const response = await this.http.api<ApiUser>({ path: 'user' });
+    const login = response.data.login;
+    if (typeof login !== 'string' || login.length === 0) {
+      throw new ForgejoAxiError(
+        'Forgejo did not report a login for the authenticated user',
+        'INVALID_RESPONSE',
+      );
+    }
+    return login;
+  }
+
+  /**
+   * Create a repository, or return the one already at that address.
+   *
+   * The route is chosen from who the token is, never from the owner's shape:
+   * an owner equal to the authenticated login goes to `user/repos`, any other
+   * owner to `orgs/{owner}/repos`. An existing repository is reported with
+   * `created: false` and never modified; fields that disagree with the
+   * request are listed in `differs` so the caller decides.
+   */
+  async createRepo(
+    repo: RepositoryRef,
+    input: RepoCreateInput,
+  ): Promise<Record<string, unknown>> {
+    const existing = await this.getRepoIfExists(repo);
+    if (existing) return this.reconcileRepo(repo, existing, input);
+
+    const login = await this.currentUser();
+    const path =
+      repo.owner.toLowerCase() === login.toLowerCase()
+        ? 'user/repos'
+        : `orgs/${encodeURIComponent(repo.owner)}/repos`;
+    const body: Record<string, unknown> = {
+      name: repo.name,
+      private: input.private,
+    };
+    if (input.description !== undefined)
+      body['description'] = input.description;
+    if (input.defaultBranch !== undefined)
+      body['default_branch'] = input.defaultBranch;
+
+    try {
+      const response = await this.http.api<ApiRepository>({
+        method: 'POST',
+        path,
+        body,
+      });
+      return {
+        created: true,
+        repository: normalizeRepository(this.config, repo, response.data),
+        differs: [],
+      };
+    } catch (error) {
+      if (!(error instanceof ForgejoAxiError)) throw error;
+      if (error.code === 'CONFLICT') {
+        // Forgejo answers 409 when the name is taken, which is also what a
+        // create that raced this one produces. Read the repository back and
+        // reconcile onto it; a 409 with nothing behind it stays an error.
+        const raced = await this.getRepoIfExists(repo);
+        if (raced) return this.reconcileRepo(repo, raced, input);
+        throw error;
+      }
+      if (error.code === 'FORBIDDEN') {
+        throw new ForgejoAxiError(
+          `Forgejo refused to create ${repo.fullName}: ${error.message}`,
+          'FORBIDDEN',
+          {
+            details: { ...error.details, route: path },
+            suggestions: [
+              path === 'user/repos'
+                ? 'The token needs write access to repositories for its own user'
+                : `The token needs write access to repositories and its user must be able to create repositories in ${repo.owner}`,
+              'Run `forgejo-axi status` to confirm the token authenticates',
+            ],
+          },
+        );
+      }
+      throw error;
+    }
+  }
+
+  // Forgejo answers a renamed repository's old name with a redirect the GET
+  // follows, so a different full_name means nothing lives at this address and
+  // a create there would succeed.
+  private async getRepoIfExists(
+    repo: RepositoryRef,
+  ): Promise<ApiRepository | null> {
+    try {
+      const response = await this.http.api<ApiRepository>({
+        path: repoPath(repo),
+      });
+      const fullName = response.data.full_name ?? '';
+      return fullName.toLowerCase() === repo.fullName.toLowerCase()
+        ? response.data
+        : null;
+    } catch (error) {
+      if (error instanceof ForgejoAxiError && error.code === 'NOT_FOUND')
+        return null;
+      throw error;
+    }
+  }
+
+  private reconcileRepo(
+    repo: RepositoryRef,
+    existing: ApiRepository,
+    input: RepoCreateInput,
+  ): Record<string, unknown> {
+    const requested: Array<[string, unknown, unknown]> = [
+      ['private', input.private, existing.private ?? false],
+      ['default_branch', input.defaultBranch, existing.default_branch ?? ''],
+      ['description', input.description, existing.description ?? ''],
+    ];
+    const differs: RepositoryDifference[] = [];
+    for (const [field, want, actual] of requested) {
+      if (want !== undefined && want !== actual)
+        differs.push({ field, requested: want, actual });
+    }
     return {
-      full_name: data.full_name ?? repo.fullName,
-      url: canonicalRepoUrl(this.config, repo),
-      api_url: canonicalRepoApiUrl(this.config, repo),
-      description: data.description ?? '',
-      private: data.private ?? false,
-      archived: data.archived ?? false,
-      default_branch: data.default_branch ?? '',
-      has_actions: data.has_actions ?? false,
-      has_pull_requests: data.has_pull_requests ?? false,
-      open_pull_requests: data.open_pr_counter ?? 0,
+      created: false,
+      repository: normalizeRepository(this.config, repo, existing),
+      differs,
     };
   }
 
@@ -1877,9 +2013,40 @@ export class ForgejoService {
       run_artifacts: hasPath(
         '/repos/{owner}/{repo}/actions/runs/{run_id}/artifacts',
       ),
+      // Both creation routes, so `repo create` can pick one from the login
+      // without discovering mid-flight that the other is missing.
+      repo_create: hasPath('/user/repos') && hasPath('/orgs/{org}/repos'),
     };
     return capabilityObject(capabilities, 'swagger', true);
   }
+}
+
+/**
+ * The repository object `repo view` and `repo create` share. `url`, `api_url`
+ * and `clone_url` are rebuilt from the configured base URL and the address the
+ * caller gave; `ssh_url` has no canonical form the CLI can derive, so it is the
+ * host's own value.
+ */
+function normalizeRepository(
+  config: ConnectionConfig,
+  repo: RepositoryRef,
+  data: ApiRepository,
+): Record<string, unknown> {
+  return {
+    full_name: data.full_name ?? repo.fullName,
+    url: canonicalRepoUrl(config, repo),
+    api_url: canonicalRepoApiUrl(config, repo),
+    clone_url: `${canonicalRepoUrl(config, repo)}.git`,
+    ssh_url: data.ssh_url ?? null,
+    description: data.description ?? '',
+    private: data.private ?? false,
+    archived: data.archived ?? false,
+    empty: data.empty ?? false,
+    default_branch: data.default_branch ?? '',
+    has_actions: data.has_actions ?? false,
+    has_pull_requests: data.has_pull_requests ?? false,
+    open_pull_requests: data.open_pr_counter ?? 0,
+  };
 }
 
 export function parseRepository(raw: string): RepositoryRef {
@@ -2671,6 +2838,7 @@ interface ProbedCapabilities {
   run_jobs?: boolean;
   run_cancel?: boolean;
   run_artifacts?: boolean;
+  repo_create?: boolean;
 }
 
 type CapabilityReport = Record<keyof ProbedCapabilities, boolean> & {
@@ -2692,6 +2860,7 @@ function capabilityObject(
     run_jobs: capabilities.run_jobs ?? false,
     run_cancel: capabilities.run_cancel ?? false,
     run_artifacts: capabilities.run_artifacts ?? false,
+    repo_create: capabilities.repo_create ?? false,
     probe: { source, complete },
   };
 }

@@ -1,6 +1,6 @@
 ---
 name: forgejo-axi
-description: "Operate Forgejo through the forgejo-axi CLI - pull requests, issues and content history, Actions runs, labels, repository identity, host status, and raw API v1 calls. Use whenever a task touches a Forgejo host: finding or reviewing pull requests, inspecting edit history, merging with an expected head, filing or updating issues, inspecting Actions runs, or managing repository labels."
+description: "Operate Forgejo through the forgejo-axi CLI - pull requests, issues and content history, Actions runs, labels, repository identity and creation, host status, and raw API v1 calls. Use whenever a task touches a Forgejo host: finding or reviewing pull requests, inspecting edit history, merging with an expected head, filing or updating issues, inspecting Actions runs, creating a repository, or managing repository labels."
 ---
 
 <!--
@@ -141,7 +141,7 @@ forgejo-axi — Inspect and manage Forgejo pull request and issue workflows
 
 Usage:
   forgejo-axi status [connection flags]
-  forgejo-axi repo view --repo OWNER/REPO [connection flags]
+  forgejo-axi repo <view|create> ...
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
   forgejo-axi pr <find|list|view|history|reviews|diff|create|update|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
@@ -175,18 +175,6 @@ Example:
   forgejo-axi status --base-url https://forgejo.example
 ```
 
-### repo view
-
-```text
-forgejo-axi repo view — show repository identity and lifecycle features
-
-Usage:
-  forgejo-axi repo view --repo OWNER/REPO [connection flags]
-
-Example:
-  forgejo-axi repo view --repo owner/repo
-```
-
 ### api
 
 ```text
@@ -205,6 +193,53 @@ Examples:
   forgejo-axi api GET repos/owner/repo
   forgejo-axi api GET repos/owner/repo/pulls --paginate --full
   forgejo-axi api PATCH repos/owner/repo/pulls/4 --data '{"title":"New title"}'
+```
+
+### repo
+
+```text
+forgejo-axi repo — repository identity and creation commands
+
+Commands:
+  view    Show repository identity and lifecycle features
+  create  Create a repository, or report the one already at that address
+
+Run `forgejo-axi repo <command> --help` for flags and examples.
+```
+
+#### repo view
+
+```text
+forgejo-axi repo view — show repository identity and lifecycle features
+
+Usage:
+  forgejo-axi repo view --repo OWNER/REPO [connection flags]
+
+Example:
+  forgejo-axi repo view --repo owner/repo
+```
+
+#### repo create
+
+```text
+forgejo-axi repo create — create a repository, or report the one already there
+
+Usage:
+  forgejo-axi repo create --repo OWNER/REPO (--private|--public) [--description TEXT] [--default-branch NAME] [connection flags]
+
+Flags:
+  --private | --public   Visibility; exactly one is required, never defaulted
+  --description TEXT     Repository description
+  --default-branch NAME  Default branch name
+
+OWNER equal to the authenticated login creates under the user; any other OWNER
+creates in that organization. A repository already at OWNER/REPO is returned
+with created: false and never modified; differs lists requested fields it does
+not satisfy: private always, default_branch and description when requested.
+
+Examples:
+  forgejo-axi repo create --repo owner/repo --private
+  forgejo-axi repo create --repo org/repo --public --description 'Docs' --default-branch main
 ```
 
 ### pr
