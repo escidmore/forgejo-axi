@@ -51,7 +51,8 @@ Commands:
 
 Wherever a command takes NUMBER it also accepts the pull request's URL, which
 carries the repository with it and makes --repo unnecessary. The request still
-goes to the configured base URL; the URL's host is never used to route it.
+goes to the configured base URL; the URL's host is never used to route it, and
+a URL whose host differs from the configured one is refused with HOST_MISMATCH.
 
 Run \`forgejo-axi pr <command> --help\` for flags and examples.
 `;

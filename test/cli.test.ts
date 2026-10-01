@@ -502,17 +502,14 @@ describe('CLI contract', () => {
     });
   });
 
-  it('addresses a pull request by URL and still calls the configured host', async () => {
-    const fixture = await loadFixture(15);
-    const server = await startServer((_request, response, recorded) => {
-      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
-        return json(response, 200, fixture.pull);
-      return json(response, 404, { message: 'not found' });
-    });
+  it('refuses a pull request URL that names another host', async () => {
+    const server = await startServer((_request, response) =>
+      json(response, 404, { message: 'not found' }),
+    );
     servers.push(server);
 
-    // The URL names a host that is not the configured one. The repository and
-    // the number come from it; the request must not.
+    // Reading the same path from the configured host would return a different
+    // pull request than the one the URL names.
     const result = await invoke([
       'pr',
       'view',
@@ -521,17 +518,36 @@ describe('CLI contract', () => {
       server.baseUrl,
       '--json',
     ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson<{ code: string }>(result.output)).toMatchObject({
+      code: 'HOST_MISMATCH',
+    });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('addresses a pull request by a URL on the configured host', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
+        return json(response, 200, fixture.pull);
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const result = await invoke([
+      'pr',
+      'view',
+      `${server.baseUrl}/acme/widgets/pulls/42`,
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
     expect(result.exitCode).toBeUndefined();
     expect(
       parseJson<{ pull_request: { number: number } }>(result.output),
     ).toMatchObject({ pull_request: { number: 42 } });
-    // Every recorded request reached the configured server by construction,
-    // so what this pins is that the pull was fetched from it under the
-    // repository the URL named.
     expect(server.requests.map((request) => request.url)).toContain(
       '/api/v1/repos/acme/widgets/pulls/42',
     );
-    expect(result.output).not.toContain('elsewhere.example');
   });
 
   it('refuses a --repo that contradicts the pull request URL', async () => {
@@ -564,7 +580,7 @@ describe('CLI contract', () => {
     const result = await invoke([
       'pr',
       'view',
-      'https://forgejo.example/acme/widgets/pulls/42',
+      `${server.baseUrl}/acme/widgets/pulls/42`,
       '--repo',
       'acme/widgets',
       '--base-url',
@@ -586,7 +602,7 @@ describe('CLI contract', () => {
       [
         'pr',
         'view',
-        'https://forgejo.example/acme/widgets/pulls/42',
+        `${server.baseUrl}/acme/widgets/pulls/42`,
         '--base-url',
         server.baseUrl,
         '--json',

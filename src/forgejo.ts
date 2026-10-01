@@ -1910,6 +1910,8 @@ export interface PullRequestTarget {
   /** Null when the caller gave a bare number and the repository is elsewhere. */
   repo: RepositoryRef | null;
   number: number;
+  /** The URL's host, present only when the caller gave a URL. */
+  host?: string;
 }
 
 /**
@@ -1918,12 +1920,11 @@ export interface PullRequestTarget {
  * A scheme is the discriminator, so anything without one still reaches
  * `parsePullNumber` and fails with the same message it always did.
  *
- * The URL supplies the repository and the number and nothing else. Its host is
- * deliberately ignored rather than adopted as the base URL: routing a
- * credentialled request at whatever host appeared in an argument is the same
- * hazard `CROSS_ORIGIN_REDIRECT` exists to refuse, and it would also break
- * every host reached through a forward or a proxy, where the printed URL and
- * the reachable one legitimately differ.
+ * The URL supplies the repository and the number. Its host is never adopted
+ * as the base URL: routing a credentialled request at whatever host appeared
+ * in an argument is the same hazard `CROSS_ORIGIN_REDIRECT` exists to refuse.
+ * It is returned so the caller can refuse a URL naming another host instead
+ * of silently reading the same path from the configured one.
  */
 export function parsePullTarget(raw: string): PullRequestTarget {
   if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) {
@@ -1952,6 +1953,7 @@ export function parsePullTarget(raw: string): PullRequestTarget {
     return {
       repo: parseRepository(`${segments[index - 2]}/${segments[index - 1]}`),
       number: parsePullNumber(candidate),
+      host: url.host,
     };
   }
   throw usageError(`Pull request URL has no OWNER/REPO/pulls/NUMBER: ${raw}`, [
