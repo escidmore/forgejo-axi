@@ -502,17 +502,14 @@ describe('CLI contract', () => {
     });
   });
 
-  it('addresses a pull request by URL and still calls the configured host', async () => {
-    const fixture = await loadFixture(15);
-    const server = await startServer((_request, response, recorded) => {
-      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
-        return json(response, 200, fixture.pull);
-      return json(response, 404, { message: 'not found' });
-    });
+  it('refuses a pull request URL that names another host', async () => {
+    const server = await startServer((_request, response) =>
+      json(response, 404, { message: 'not found' }),
+    );
     servers.push(server);
 
-    // The URL names a host that is not the configured one. The repository and
-    // the number come from it; the request must not.
+    // Reading the same path from the configured host would return a different
+    // pull request than the one the URL names.
     const result = await invoke([
       'pr',
       'view',
@@ -521,17 +518,36 @@ describe('CLI contract', () => {
       server.baseUrl,
       '--json',
     ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson<{ code: string }>(result.output)).toMatchObject({
+      code: 'HOST_MISMATCH',
+    });
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it('addresses a pull request by a URL on the configured host', async () => {
+    const fixture = await loadFixture(15);
+    const server = await startServer((_request, response, recorded) => {
+      if (recorded.url === '/api/v1/repos/acme/widgets/pulls/42')
+        return json(response, 200, fixture.pull);
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const result = await invoke([
+      'pr',
+      'view',
+      `${server.baseUrl}/acme/widgets/pulls/42`,
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ]);
     expect(result.exitCode).toBeUndefined();
     expect(
       parseJson<{ pull_request: { number: number } }>(result.output),
     ).toMatchObject({ pull_request: { number: 42 } });
-    // Every recorded request reached the configured server by construction,
-    // so what this pins is that the pull was fetched from it under the
-    // repository the URL named.
     expect(server.requests.map((request) => request.url)).toContain(
       '/api/v1/repos/acme/widgets/pulls/42',
     );
-    expect(result.output).not.toContain('elsewhere.example');
   });
 
   it('refuses a --repo that contradicts the pull request URL', async () => {
@@ -564,7 +580,7 @@ describe('CLI contract', () => {
     const result = await invoke([
       'pr',
       'view',
-      'https://forgejo.example/acme/widgets/pulls/42',
+      `${server.baseUrl}/acme/widgets/pulls/42`,
       '--repo',
       'acme/widgets',
       '--base-url',
@@ -586,7 +602,7 @@ describe('CLI contract', () => {
       [
         'pr',
         'view',
-        'https://forgejo.example/acme/widgets/pulls/42',
+        `${server.baseUrl}/acme/widgets/pulls/42`,
         '--base-url',
         server.baseUrl,
         '--json',
@@ -970,6 +986,106 @@ describe('CLI contract', () => {
       merged: true,
       merge_commit_sha: 'merge456',
     });
+  });
+
+  it('marks a draft pull request ready by removing its title prefix', async () => {
+    const fixture = await loadFixture(16);
+    let pull = { ...fixture.pull, title: 'WIP: Fix race', draft: true };
+    const patches: unknown[] = [];
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42') && recorded.method === 'GET')
+        return json(response, 200, pull);
+      if (path.endsWith('/pulls/42') && recorded.method === 'PATCH') {
+        const patch = parseJson<{ title: string }>(recorded.body);
+        patches.push(patch);
+        pull = { ...pull, ...patch, draft: false };
+        return json(response, 200, pull);
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const args = [
+      'pr',
+      'ready',
+      `${server.baseUrl}/acme/widgets/pulls/42`,
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ];
+
+    const ready = parseJson<{
+      updated: boolean;
+      pull_request: { title: string; draft: boolean };
+    }>((await invoke(args)).output);
+    expect(ready).toMatchObject({
+      updated: true,
+      pull_request: { title: 'Fix race', draft: false },
+    });
+    expect(patches).toEqual([{ title: 'Fix race' }]);
+
+    // Already ready is exit-0 and mutation-free.
+    const again = await invoke(args);
+    expect(again.exitCode).toBeUndefined();
+    expect(parseJson<{ updated: boolean }>(again.output).updated).toBe(false);
+    expect(patches).toHaveLength(1);
+  });
+
+  it('passes the newer merge styles and branch deletion through to Forgejo', async () => {
+    const fixture = await loadFixture(16);
+    const posted: unknown[] = [];
+    let merged = false;
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42/merge') && recorded.method === 'POST') {
+        posted.push(parseJson(recorded.body));
+        merged = true;
+        response.statusCode = 200;
+        response.end();
+        return;
+      }
+      if (path.endsWith('/pulls/42') && recorded.method === 'GET')
+        return json(response, 200, { ...fixture.pull, merged });
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const merge = (method: string, ...extra: string[]) =>
+      invoke([
+        'pr',
+        'merge',
+        '--repo',
+        'acme/widgets',
+        '42',
+        '--expected-head',
+        'abc123',
+        '--method',
+        method,
+        ...extra,
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+
+    for (const method of ['rebase-merge', 'fast-forward-only']) {
+      merged = false;
+      expect((await merge(method, '--delete-branch')).exitCode).toBeUndefined();
+    }
+    expect(posted).toEqual([
+      {
+        Do: 'rebase-merge',
+        head_commit_id: 'abc123',
+        delete_branch_after_merge: true,
+      },
+      {
+        Do: 'fast-forward-only',
+        head_commit_id: 'abc123',
+        delete_branch_after_merge: true,
+      },
+    ]);
+
+    const rejected = await merge('octopus');
+    expect(rejected.exitCode).toBe(2);
+    expect(posted).toHaveLength(2);
   });
 
   it('reads pull request bodies from UTF-8 files and stdin verbatim', async () => {

@@ -30,6 +30,7 @@ import {
   type IssueIdentity,
   type IssueInput,
   type LabelInput,
+  type MergeMethod,
   type PullRequestIdentity,
   type PullRequestListRow,
   type RepositoryRef,
@@ -405,6 +406,7 @@ const runPull = dispatch('pr', {
   merged: (args, env) => pullRead('merged', args, env),
   create: pullCreate,
   update: pullUpdate,
+  ready: pullReady,
   merge: pullMerge,
 });
 
@@ -534,8 +536,8 @@ async function pullRead(
     }),
     `pr ${command}`,
   );
-  const { repo, number } = resolvePullTarget(parsed, env);
-  const service = await serviceFor(parsed, env);
+  const { repo, number, host } = resolvePullTarget(parsed, env);
+  const service = await serviceFor(parsed, env, host);
   if (command === 'view') {
     const fields = chooseDetailFields(
       stringFlag(parsed, '--fields'),
@@ -574,12 +576,12 @@ async function pullReviews(
     }),
     'pr reviews',
   );
-  const { repo, number } = resolvePullTarget(parsed, env);
+  const { repo, number, host } = resolvePullTarget(parsed, env);
   const full = boolFlag(parsed, '--full');
   const requestedLimit = stringFlag(parsed, '--limit');
   const json = boolFlag(parsed, '--json');
   rejectDisplayFlagConflicts(full, requestedLimit, json);
-  const service = await serviceFor(parsed, env);
+  const service = await serviceFor(parsed, env, host);
   const page = await service.listReviews(repo, number, full);
   const showAll = full || json;
   const displayed = showAll
@@ -597,8 +599,8 @@ async function pullDiff(
     withFlags({ '--repo': 'value', '--full': 'boolean' }),
     'pr diff',
   );
-  const { repo, number } = resolvePullTarget(parsed, env);
-  const service = await serviceFor(parsed, env);
+  const { repo, number, host } = resolvePullTarget(parsed, env);
+  const service = await serviceFor(parsed, env, host);
   const diff = await service.diffPull(repo, number);
   const showAll = boolFlag(parsed, '--full') || boolFlag(parsed, '--json');
   return diffOutput(diff, showAll);
@@ -678,19 +680,29 @@ async function pullUpdate(
     }),
     'pr update',
   );
-  const { repo, number } = resolvePullTarget(parsed, env);
+  const { repo, number, host } = resolvePullTarget(parsed, env);
   const state = stringFlag(parsed, '--state');
   if (state !== undefined) stateFlag(state, false);
   const title = stringFlag(parsed, '--title');
   const body = await pullBody(parsed, stdin);
   const base = stringFlag(parsed, '--base');
-  const service = await serviceFor(parsed, env);
+  const service = await serviceFor(parsed, env, host);
   return service.updatePull(repo, number, {
     ...(title === undefined ? {} : { title }),
     ...(body === undefined ? {} : { body }),
     ...(base === undefined ? {} : { base }),
     ...(state === undefined ? {} : { state }),
   });
+}
+
+async function pullReady(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(args, withFlags({ '--repo': 'value' }), 'pr ready');
+  const { repo, number, host } = resolvePullTarget(parsed, env);
+  const service = await serviceFor(parsed, env, host);
+  return service.readyPull(repo, number);
 }
 
 async function pullBody(
@@ -751,18 +763,37 @@ async function pullMerge(
       '--repo': 'value',
       '--expected-head': 'value',
       '--method': 'value',
+      '--delete-branch': 'boolean',
     }),
     'pr merge',
   );
-  const { repo, number } = resolvePullTarget(parsed, env);
+  const { repo, number, host } = resolvePullTarget(parsed, env);
   const expectedHead = requireFlag(parsed, '--expected-head');
   const rawMethod = stringFlag(parsed, '--method') ?? 'merge';
-  if (!['merge', 'squash', 'rebase'].includes(rawMethod)) {
-    throw usageError('--method must be merge, squash, or rebase');
+  if (
+    ![
+      'merge',
+      'squash',
+      'rebase',
+      'rebase-merge',
+      'fast-forward-only',
+    ].includes(rawMethod)
+  ) {
+    throw usageError(
+      '--method must be merge, squash, rebase, rebase-merge, or fast-forward-only',
+    );
   }
-  const method = rawMethod as 'merge' | 'squash' | 'rebase';
-  const service = await serviceFor(parsed, env);
-  return { proof: await service.merge(repo, number, expectedHead, method) };
+  const method = rawMethod as MergeMethod;
+  const service = await serviceFor(parsed, env, host);
+  return {
+    proof: await service.merge(
+      repo,
+      number,
+      expectedHead,
+      method,
+      boolFlag(parsed, '--delete-branch'),
+    ),
+  };
 }
 
 const runLabel = dispatch('label', {
@@ -1029,13 +1060,14 @@ async function contentHistoryRead(
 
   let repo: RepositoryRef;
   let number: number;
+  let host: string | undefined;
   if (family === 'pr') {
-    ({ repo, number } = resolvePullTarget(parsed, env));
+    ({ repo, number, host } = resolvePullTarget(parsed, env));
   } else {
     number = parseIssueNumber(requireOnePositional(parsed, 'issue number'));
     repo = resolveRepo(parsed, env);
   }
-  const service = await serviceFor(parsed, env);
+  const service = await serviceFor(parsed, env, host);
   if (operation === 'overview') {
     return { overview: await service.contentHistoryOverview(repo, number) };
   }
@@ -1345,6 +1377,7 @@ function unsupportedResult(capability: string): Record<string, unknown> {
 async function serviceFor(
   parsed: ParsedArgs,
   env: NodeJS.ProcessEnv,
+  pullHost?: string,
 ): Promise<ForgejoService> {
   const connection = await resolveConnection(
     {
@@ -1355,6 +1388,20 @@ async function serviceFor(
     },
     env,
   );
+  // A pull request URL naming another host would otherwise be read from the
+  // configured one under the same path, which is a different pull request.
+  if (pullHost !== undefined && pullHost !== connection.baseUrl.host) {
+    throw new ForgejoAxiError(
+      `Pull request URL host ${pullHost} does not match the configured host ${connection.baseUrl.host}`,
+      'HOST_MISMATCH',
+      {
+        usage: true,
+        suggestions: [
+          'Pass --base-url for the host the URL names, or pass the number instead of the URL',
+        ],
+      },
+    );
+  }
   return new ForgejoService(connection);
 }
 
@@ -1378,7 +1425,7 @@ function resolveRepo(
 function resolvePullTarget(
   parsed: ParsedArgs,
   env: NodeJS.ProcessEnv,
-): { repo: RepositoryRef; number: number } {
+): { repo: RepositoryRef; number: number; host?: string | undefined } {
   const target = parsePullTarget(
     requireOnePositional(parsed, 'pull request number'),
   );
@@ -1395,7 +1442,7 @@ function resolvePullTarget(
       ['Drop --repo, or pass the number instead of the URL'],
     );
   }
-  return { repo: target.repo, number: target.number };
+  return { repo: target.repo, number: target.number, host: target.host };
 }
 
 function withFlags(flags: FlagSpec): FlagSpec {
