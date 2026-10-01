@@ -23,7 +23,7 @@ forgejo-axi pr update [--repo OWNER/REPO] NUMBER|URL [--title TITLE] [--body BOD
 forgejo-axi pr ready [--repo OWNER/REPO] NUMBER|URL
 forgejo-axi pr checks [--repo OWNER/REPO] NUMBER|URL
 forgejo-axi pr mergeability [--repo OWNER/REPO] NUMBER|URL
-forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase]
+forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase|rebase-merge|fast-forward-only] [--delete-branch]
 forgejo-axi pr merged [--repo OWNER/REPO] NUMBER|URL
 forgejo-axi label list --repo OWNER/REPO [--limit N|--full]
 forgejo-axi label create --repo OWNER/REPO NAME [--color HEX] [--description TEXT]
@@ -134,7 +134,7 @@ Checks are `{sha, reported, state, statuses, required, required_state, passes, p
 
 Mergeability is `{number, url, head_sha, forgejo_mergeable, checks_pass, mergeable, reasons}`. `mergeable` is true only when Forgejo reports the pull mergeable and checks pass. Checks are evaluated even for already-merged pull requests; `checks_pass` is never fabricated. Reasons include `already_merged`, `forgejo_not_mergeable`, and `checks_<state>` using the required state, or the overall state when no contexts are required.
 
-Merge requires `--expected-head`. The expected SHA is verified before returning any proof, including already-merged and post-error recovery paths, and Forgejo's atomic `head_commit_id` guard is sent for the mutation. A head mismatch is `HEAD_CHANGED` and is never retried against the new head.
+Merge requires `--expected-head`. The expected SHA is verified before returning any proof, including already-merged and post-error recovery paths, and Forgejo's atomic `head_commit_id` guard is sent for the mutation. A head mismatch is `HEAD_CHANGED` and is never retried against the new head. `--delete-branch` sends Forgejo's `delete_branch_after_merge`.
 
 Merged-state proof always has `{merged, number, url, head_sha, merge_commit_sha, merged_at, merged_by}`. For an unmerged pull request, `merged=false` and unavailable merge fields are `null`; consumers never receive a smaller undocumented shape.
 

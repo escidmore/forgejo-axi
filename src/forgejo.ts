@@ -381,6 +381,9 @@ const DONE_RUN_STATUSES = new Set([
 
 export type { ChecksResult };
 
+export type MergeMethod =
+  'merge' | 'squash' | 'rebase' | 'rebase-merge' | 'fast-forward-only';
+
 export type MergedProof = {
   merged: boolean;
   number: number;
@@ -951,7 +954,8 @@ export class ForgejoService {
     repo: RepositoryRef,
     number: number,
     expectedHead: string,
-    method: 'merge' | 'squash' | 'rebase',
+    method: MergeMethod,
+    deleteBranch = false,
   ): Promise<MergedProof> {
     const before = await this.getPull(repo, number);
     requireHeadSha(before);
@@ -961,7 +965,11 @@ export class ForgejoService {
       await this.http.api({
         method: 'POST',
         path: `${repoPath(repo)}/pulls/${number}/merge`,
-        body: { Do: method, head_commit_id: expectedHead },
+        body: {
+          Do: method,
+          head_commit_id: expectedHead,
+          ...(deleteBranch ? { delete_branch_after_merge: true } : {}),
+        },
       });
     } catch (error) {
       if (!(error instanceof ForgejoAxiError) || error.code === 'HEAD_CHANGED')

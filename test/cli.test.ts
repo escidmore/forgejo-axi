@@ -1030,6 +1030,64 @@ describe('CLI contract', () => {
     expect(parseJson<{ updated: boolean }>(again.output).updated).toBe(false);
     expect(patches).toHaveLength(1);
   });
+
+  it('passes the newer merge styles and branch deletion through to Forgejo', async () => {
+    const fixture = await loadFixture(16);
+    const posted: unknown[] = [];
+    let merged = false;
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42/merge') && recorded.method === 'POST') {
+        posted.push(parseJson(recorded.body));
+        merged = true;
+        response.statusCode = 200;
+        response.end();
+        return;
+      }
+      if (path.endsWith('/pulls/42') && recorded.method === 'GET')
+        return json(response, 200, { ...fixture.pull, merged });
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const merge = (method: string, ...extra: string[]) =>
+      invoke([
+        'pr',
+        'merge',
+        '--repo',
+        'acme/widgets',
+        '42',
+        '--expected-head',
+        'abc123',
+        '--method',
+        method,
+        ...extra,
+        '--base-url',
+        server.baseUrl,
+        '--json',
+      ]);
+
+    for (const method of ['rebase-merge', 'fast-forward-only']) {
+      merged = false;
+      expect((await merge(method, '--delete-branch')).exitCode).toBeUndefined();
+    }
+    expect(posted).toEqual([
+      {
+        Do: 'rebase-merge',
+        head_commit_id: 'abc123',
+        delete_branch_after_merge: true,
+      },
+      {
+        Do: 'fast-forward-only',
+        head_commit_id: 'abc123',
+        delete_branch_after_merge: true,
+      },
+    ]);
+
+    const rejected = await merge('octopus');
+    expect(rejected.exitCode).toBe(2);
+    expect(posted).toHaveLength(2);
+  });
+
   it('reads pull request bodies from UTF-8 files and stdin verbatim', async () => {
     const fixture = await loadFixture(16);
     const fileBody = [

@@ -441,10 +441,14 @@ Example:
 forgejo-axi pr merge — expected-head merge with merged-state proof
 
 Usage:
-  forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase] [connection flags]
+  forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase|rebase-merge|fast-forward-only] [--delete-branch] [connection flags]
 
-Example:
+Flags:
+  --delete-branch   Delete the head branch after the merge
+
+Examples:
   forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash
+  forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method fast-forward-only --delete-branch
 ```
 
 #### pr merged

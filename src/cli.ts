@@ -30,6 +30,7 @@ import {
   type IssueIdentity,
   type IssueInput,
   type LabelInput,
+  type MergeMethod,
   type PullRequestIdentity,
   type PullRequestListRow,
   type RepositoryRef,
@@ -762,18 +763,37 @@ async function pullMerge(
       '--repo': 'value',
       '--expected-head': 'value',
       '--method': 'value',
+      '--delete-branch': 'boolean',
     }),
     'pr merge',
   );
   const { repo, number, host } = resolvePullTarget(parsed, env);
   const expectedHead = requireFlag(parsed, '--expected-head');
   const rawMethod = stringFlag(parsed, '--method') ?? 'merge';
-  if (!['merge', 'squash', 'rebase'].includes(rawMethod)) {
-    throw usageError('--method must be merge, squash, or rebase');
+  if (
+    ![
+      'merge',
+      'squash',
+      'rebase',
+      'rebase-merge',
+      'fast-forward-only',
+    ].includes(rawMethod)
+  ) {
+    throw usageError(
+      '--method must be merge, squash, rebase, rebase-merge, or fast-forward-only',
+    );
   }
-  const method = rawMethod as 'merge' | 'squash' | 'rebase';
+  const method = rawMethod as MergeMethod;
   const service = await serviceFor(parsed, env, host);
-  return { proof: await service.merge(repo, number, expectedHead, method) };
+  return {
+    proof: await service.merge(
+      repo,
+      number,
+      expectedHead,
+      method,
+      boolFlag(parsed, '--delete-branch'),
+    ),
+  };
 }
 
 const runLabel = dispatch('label', {
