@@ -405,6 +405,7 @@ const runPull = dispatch('pr', {
   merged: (args, env) => pullRead('merged', args, env),
   create: pullCreate,
   update: pullUpdate,
+  ready: pullReady,
   merge: pullMerge,
 });
 
@@ -691,6 +692,16 @@ async function pullUpdate(
     ...(base === undefined ? {} : { base }),
     ...(state === undefined ? {} : { state }),
   });
+}
+
+async function pullReady(
+  args: string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const parsed = parseArgs(args, withFlags({ '--repo': 'value' }), 'pr ready');
+  const { repo, number, host } = resolvePullTarget(parsed, env);
+  const service = await serviceFor(parsed, env, host);
+  return service.readyPull(repo, number);
 }
 
 async function pullBody(

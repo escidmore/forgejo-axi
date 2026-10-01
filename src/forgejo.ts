@@ -892,6 +892,20 @@ export class ForgejoService {
     return { updated, pull_request: await this.getPull(repo, number) };
   }
 
+  async readyPull(
+    repo: RepositoryRef,
+    number: number,
+  ): Promise<Record<string, unknown>> {
+    const raw = await this.getPullRaw(repo, number);
+    // Forgejo and Gitea mark a draft by its title prefix, so readiness is
+    // that prefix removed through the same edit route `pr update` uses.
+    let title = raw.title ?? '';
+    while (isDraftTitle(title)) title = title.replace(DRAFT_PREFIX, '');
+    const updated = title !== (raw.title ?? '');
+    if (updated) await this.patchPull(repo, number, { title });
+    return { updated, pull_request: await this.getPull(repo, number) };
+  }
+
   async checks(repo: RepositoryRef, number: number): Promise<ChecksResult> {
     return this.checksForPull(repo, await this.getPull(repo, number));
   }
@@ -2622,12 +2636,14 @@ function namedSearchIncomplete(
   );
 }
 
+const DRAFT_PREFIX = /^(?:WIP:|\[WIP\]|Draft:|\[Draft\])\s*/i;
+
 function draftTitle(title: string): string {
   return isDraftTitle(title) ? title : `WIP: ${title}`;
 }
 
 function isDraftTitle(title: string): boolean {
-  return /^(?:WIP:|\[WIP\]|Draft:|\[Draft\])\s*/i.test(title);
+  return DRAFT_PREFIX.test(title);
 }
 
 function requireHeadSha(pull: PullRequestIdentity): string {

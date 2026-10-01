@@ -143,7 +143,7 @@ Usage:
   forgejo-axi status [connection flags]
   forgejo-axi repo view --repo OWNER/REPO [connection flags]
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
-  forgejo-axi pr <find|list|view|history|reviews|diff|create|update|checks|mergeability|merge|merged> ...
+  forgejo-axi pr <find|list|view|history|reviews|diff|create|update|ready|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
   forgejo-axi issue <list|view|history|create|edit|close|reopen|comment> ...
   forgejo-axi run <list|view|cancel|download> ...
@@ -221,6 +221,7 @@ Commands:
   diff          Print the unified diff
   create        Idempotently create or reconcile an open pull request
   update        Idempotently update a pull request
+  ready         Idempotently mark a draft pull request ready for review
   checks        Normalize commit statuses and required contexts
   mergeability  Evaluate Forgejo mergeability and required checks
   merge         Merge only the expected head and return merged proof
@@ -393,6 +394,21 @@ Examples:
   forgejo-axi pr update --repo owner/repo 42 --state closed
   forgejo-axi pr update --repo owner/repo 42 --body-file ./body.md
   cat body.md | forgejo-axi pr update --repo owner/repo 42 --body-file -
+```
+
+#### pr ready
+
+```text
+forgejo-axi pr ready — idempotently mark a draft pull request ready for review
+
+Usage:
+  forgejo-axi pr ready [--repo OWNER/REPO] NUMBER|URL [connection flags]
+
+The draft title prefix (WIP:, [WIP], Draft:, [Draft]) is removed; a pull
+request that is already ready is left unchanged.
+
+Example:
+  forgejo-axi pr ready --repo owner/repo 42
 ```
 
 #### pr checks

@@ -13,7 +13,7 @@ Usage:
   forgejo-axi status [connection flags]
   forgejo-axi repo view --repo OWNER/REPO [connection flags]
   forgejo-axi api METHOD PATH [--data JSON] [--paginate [--limit N|--full]] [connection flags]
-  forgejo-axi pr <find|list|view|history|reviews|diff|create|update|checks|mergeability|merge|merged> ...
+  forgejo-axi pr <find|list|view|history|reviews|diff|create|update|ready|checks|mergeability|merge|merged> ...
   forgejo-axi label <list|create|edit|delete> ...
   forgejo-axi issue <list|view|history|create|edit|close|reopen|comment> ...
   forgejo-axi run <list|view|cancel|download> ...
@@ -44,6 +44,7 @@ Commands:
   diff          Print the unified diff
   create        Idempotently create or reconcile an open pull request
   update        Idempotently update a pull request
+  ready         Idempotently mark a draft pull request ready for review
   checks        Normalize commit statuses and required contexts
   mergeability  Evaluate Forgejo mergeability and required checks
   merge         Merge only the expected head and return merged proof
@@ -138,6 +139,7 @@ export const HELP: Record<string, string> = {
   'pr diff': `forgejo-axi pr diff — print the unified diff\n\nUsage:\n  forgejo-axi pr diff [--repo OWNER/REPO] NUMBER|URL [--full] [connection flags]\n\nFlags:\n  --full   Print every line instead of the first 30\n\nExample:\n  forgejo-axi pr diff --repo owner/repo 42 --full\n`,
   'pr create': `forgejo-axi pr create — idempotently create or reconcile an open pull request\n\nUsage:\n  forgejo-axi pr create --repo OWNER/REPO --title TITLE --head BRANCH --base BRANCH [--body BODY | --body-file PATH|-] [--draft] [connection flags]\n\nFlags:\n  --body BODY           Pull request body text\n  --body-file PATH|-    Read the body from a UTF-8 file, or '-' for stdin\n  --draft               Create the pull request as a draft\n\nThe body flags are mutually exclusive; --body-file content is sent verbatim.\n\nExamples:\n  forgejo-axi pr create --repo owner/repo --title "Fix race" --head fix/race --base main\n  forgejo-axi pr create --repo owner/repo --title "Fix race" --head fix/race --base main --body-file ./body.md\n  cat body.md | forgejo-axi pr create --repo owner/repo --title "Fix race" --head fix/race --base main --body-file -\n`,
   'pr update': `forgejo-axi pr update — idempotently update a pull request\n\nUsage:\n  forgejo-axi pr update [--repo OWNER/REPO] NUMBER|URL [--title TITLE] [--body BODY | --body-file PATH|-] [--base BRANCH] [--state open|closed] [connection flags]\n\nFlags:\n  --body BODY           Pull request body text\n  --body-file PATH|-    Read the body from a UTF-8 file, or '-' for stdin\n\nThe body flags are mutually exclusive; --body-file content is sent verbatim.\n\nExamples:\n  forgejo-axi pr update --repo owner/repo 42 --state closed\n  forgejo-axi pr update --repo owner/repo 42 --body-file ./body.md\n  cat body.md | forgejo-axi pr update --repo owner/repo 42 --body-file -\n`,
+  'pr ready': `forgejo-axi pr ready — idempotently mark a draft pull request ready for review\n\nUsage:\n  forgejo-axi pr ready [--repo OWNER/REPO] NUMBER|URL [connection flags]\n\nThe draft title prefix (WIP:, [WIP], Draft:, [Draft]) is removed; a pull\nrequest that is already ready is left unchanged.\n\nExample:\n  forgejo-axi pr ready --repo owner/repo 42\n`,
   'pr checks': `forgejo-axi pr checks — normalize statuses and required contexts\n\nUsage:\n  forgejo-axi pr checks [--repo OWNER/REPO] NUMBER|URL [connection flags]\n\nExample:\n  forgejo-axi pr checks --repo owner/repo 42 --json\n`,
   'pr mergeability': `forgejo-axi pr mergeability — evaluate mergeability and required checks\n\nUsage:\n  forgejo-axi pr mergeability [--repo OWNER/REPO] NUMBER|URL [connection flags]\n\nExample:\n  forgejo-axi pr mergeability --repo owner/repo 42\n`,
   'pr merge': `forgejo-axi pr merge — expected-head merge with merged-state proof\n\nUsage:\n  forgejo-axi pr merge [--repo OWNER/REPO] NUMBER|URL --expected-head SHA [--method merge|squash|rebase] [connection flags]\n\nExample:\n  forgejo-axi pr merge --repo owner/repo 42 --expected-head abc123 --method squash\n`,

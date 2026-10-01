@@ -988,6 +988,48 @@ describe('CLI contract', () => {
     });
   });
 
+  it('marks a draft pull request ready by removing its title prefix', async () => {
+    const fixture = await loadFixture(16);
+    let pull = { ...fixture.pull, title: 'WIP: Fix race', draft: true };
+    const patches: unknown[] = [];
+    const server = await startServer((_request, response, recorded) => {
+      const path = new URL(recorded.url, 'http://fake').pathname;
+      if (path.endsWith('/pulls/42') && recorded.method === 'GET')
+        return json(response, 200, pull);
+      if (path.endsWith('/pulls/42') && recorded.method === 'PATCH') {
+        const patch = parseJson<{ title: string }>(recorded.body);
+        patches.push(patch);
+        pull = { ...pull, ...patch, draft: false };
+        return json(response, 200, pull);
+      }
+      return json(response, 404, { message: 'not found' });
+    });
+    servers.push(server);
+    const args = [
+      'pr',
+      'ready',
+      `${server.baseUrl}/acme/widgets/pulls/42`,
+      '--base-url',
+      server.baseUrl,
+      '--json',
+    ];
+
+    const ready = parseJson<{
+      updated: boolean;
+      pull_request: { title: string; draft: boolean };
+    }>((await invoke(args)).output);
+    expect(ready).toMatchObject({
+      updated: true,
+      pull_request: { title: 'Fix race', draft: false },
+    });
+    expect(patches).toEqual([{ title: 'Fix race' }]);
+
+    // Already ready is exit-0 and mutation-free.
+    const again = await invoke(args);
+    expect(again.exitCode).toBeUndefined();
+    expect(parseJson<{ updated: boolean }>(again.output).updated).toBe(false);
+    expect(patches).toHaveLength(1);
+  });
   it('reads pull request bodies from UTF-8 files and stdin verbatim', async () => {
     const fixture = await loadFixture(16);
     const fileBody = [
