@@ -24,6 +24,10 @@ interface IssueWorld {
   labels: Array<Record<string, unknown>>;
   milestones: Array<Record<string, unknown>>;
   list?: Array<Record<string, unknown>>;
+  /** The owner's organization labels; absent, the owner answers like a user. */
+  orgLabels?: Array<Record<string, unknown>>;
+  /** An org-labels status other than 200, such as a token without the organization scope. */
+  orgLabelsStatus?: number;
 }
 
 afterEach(closeServers);
@@ -48,8 +52,8 @@ function applyIssuePatch(
   for (const [key, value] of Object.entries(patch)) {
     if (key === 'labels') {
       const ids = value as number[];
-      next['labels'] = world.labels.filter((label) =>
-        ids.includes(label['id'] as number),
+      next['labels'] = [...world.labels, ...(world.orgLabels ?? [])].filter(
+        (label) => ids.includes(label['id'] as number),
       );
     } else if (key === 'assignees') {
       next['assignees'] = (value as string[]).map((login) => ({ login }));
@@ -79,6 +83,13 @@ async function issueServer(world: IssueWorld): Promise<FakeServer> {
         : parseJson<Record<string, unknown>>(recorded.body);
     const number = Number(state.issue['number']);
 
+    if (url.pathname === '/api/v1/orgs/acme/labels') {
+      if (state.orgLabelsStatus !== undefined)
+        return json(response, state.orgLabelsStatus, { message: 'refused' });
+      if (state.orgLabels === undefined)
+        return json(response, 404, { message: 'not found' });
+      return json(response, 200, page === 1 ? state.orgLabels : []);
+    }
     if (path === '/labels') {
       return json(response, 200, page === 1 ? state.labels : []);
     }
@@ -715,5 +726,256 @@ describe('issue command family', () => {
     );
     expect(failed.exitCode).toBe(1);
     expect(failed.output).not.toContain('super-secret-token');
+  });
+});
+
+describe('organization label resolution', () => {
+  const ownerLabel = {
+    id: 21,
+    name: 'owner',
+    color: '0e8a16',
+    description: 'Set across the organization',
+    exclusive: false,
+    is_archived: false,
+  };
+
+  async function orgWorld(
+    version: 15 | 16,
+    overrides: Partial<IssueWorld> = {},
+  ): Promise<IssueWorld> {
+    return {
+      ...(await worldFor(version)),
+      orgLabels: [ownerLabel],
+      ...overrides,
+    };
+  }
+
+  function orgLabelRequests(server: FakeServer) {
+    return server.requests.filter((request) =>
+      request.url.startsWith('/api/v1/orgs/acme/labels'),
+    );
+  }
+
+  it.each([15, 16] as const)(
+    'creates a Forgejo %i issue carrying an organization label',
+    async (version) => {
+      const server = await issueServer(await orgWorld(version));
+      const result = await invoke([
+        'issue',
+        'create',
+        ...connection(server),
+        '--title',
+        'Scheduler stalls',
+        '--label',
+        'bug,owner',
+      ]);
+      expect(result.exitCode).toBeUndefined();
+      const posted = server.requests.find(
+        (request) => request.method === 'POST',
+      )!;
+      expect(parseJson(posted.body)).toEqual({
+        title: 'Scheduler stalls',
+        labels: [7, 21],
+      });
+      expect(parseJson(result.output)).toMatchObject({
+        issue: { labels: ['bug', 'owner'] },
+      });
+    },
+  );
+
+  it('replaces an issue label set with an organization label and repeats as a no-op', async () => {
+    const server = await issueServer(await orgWorld(16));
+    const args = [
+      'issue',
+      'edit',
+      ...connection(server),
+      '7',
+      '--label',
+      'owner',
+    ];
+
+    const first = parseJson<{ updated: boolean; issue: { labels: string[] } }>(
+      (await invoke(args)).output,
+    );
+    expect(first).toMatchObject({
+      updated: true,
+      issue: { labels: ['owner'] },
+    });
+    expect(
+      parseJson(server.requests.find((r) => r.method === 'PUT')!.body),
+    ).toEqual({ labels: [21] });
+
+    const before = server.requests.length;
+    const second = parseJson<{ updated: boolean }>((await invoke(args)).output);
+    expect(second.updated).toBe(false);
+    expect(
+      server.requests
+        .slice(before)
+        .every((request) => request.method === 'GET'),
+    ).toBe(true);
+  });
+
+  it('filters an issue list by an organization label name', async () => {
+    const server = await issueServer(await orgWorld(16));
+    const result = await invoke([
+      'issue',
+      'list',
+      ...connection(server),
+      '--label',
+      'owner',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    const query = new URL(
+      server.requests.find((request) => request.url.includes('/issues?'))!.url,
+      'http://fake',
+    ).searchParams;
+    expect(query.get('labels')).toBe('owner');
+  });
+
+  it('prefers a repository label over an organization label of the same name', async () => {
+    const server = await issueServer(
+      await orgWorld(16, {
+        orgLabels: [ownerLabel, { ...ownerLabel, id: 30, name: 'bug' }],
+      }),
+    );
+    const result = await invoke([
+      'issue',
+      'create',
+      ...connection(server),
+      '--title',
+      'Scheduler stalls',
+      '--label',
+      'bug',
+    ]);
+    expect(result.exitCode).toBeUndefined();
+    expect(
+      parseJson(server.requests.find((r) => r.method === 'POST')!.body),
+    ).toMatchObject({ labels: [7] });
+    // Every name resolved in the repository, so the organization was never asked.
+    expect(orgLabelRequests(server)).toEqual([]);
+  });
+
+  it('reports a name absent from a user-owned repository as before', async () => {
+    const server = await issueServer(await worldFor(16));
+    const result = await invoke([
+      'issue',
+      'create',
+      ...connection(server),
+      '--title',
+      'Scheduler stalls',
+      '--label',
+      'owner',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      error: 'Repository has no label named owner',
+      code: 'LABEL_NOT_FOUND',
+      details: { name: 'owner' },
+      help: ['Run `forgejo-axi label list --repo acme/widgets`'],
+    });
+    expect(orgLabelRequests(server)).toHaveLength(1);
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('reports a name in neither set with the organization in the hint', async () => {
+    const server = await issueServer(await orgWorld(16));
+    const result = await invoke([
+      'issue',
+      'create',
+      ...connection(server),
+      '--title',
+      'Scheduler stalls',
+      '--label',
+      'ghost',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      error: 'Repository has no label named ghost',
+      code: 'LABEL_NOT_FOUND',
+      details: { name: 'ghost' },
+      help: [
+        'Run `forgejo-axi label list --repo acme/widgets`',
+        'Run `forgejo-axi api GET orgs/acme/labels --paginate`',
+      ],
+    });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('names an organization label set the token cannot read', async () => {
+    const server = await issueServer(
+      await orgWorld(16, { orgLabelsStatus: 403 }),
+    );
+    const result = await invoke([
+      'issue',
+      'create',
+      ...connection(server),
+      '--title',
+      'Scheduler stalls',
+      '--label',
+      'owner',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      error: 'Repository has no label named owner',
+      code: 'LABEL_NOT_FOUND',
+      details: { name: 'owner', organization_labels: 'forbidden' },
+      help: [
+        'Run `forgejo-axi label list --repo acme/widgets`',
+        'If acme is an organization, grant the token the read:organization scope so its labels can be resolved',
+      ],
+    });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('refuses an organization label name carried twice', async () => {
+    const server = await issueServer(
+      await orgWorld(16, {
+        orgLabels: [ownerLabel, { ...ownerLabel, id: 22 }],
+      }),
+    );
+    const result = await invoke([
+      'issue',
+      'create',
+      ...connection(server),
+      '--title',
+      'Scheduler stalls',
+      '--label',
+      'owner',
+    ]);
+    expect(result.exitCode).toBe(2);
+    expect(parseJson(result.output)).toMatchObject({
+      error: 'Organization has 2 labels named owner',
+      code: 'LABEL_AMBIGUOUS',
+      details: { name: 'owner', ids: [21, 22] },
+    });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
+  });
+
+  it('propagates an organization label failure that is not an answer', async () => {
+    const server = await issueServer(
+      await orgWorld(16, { orgLabelsStatus: 500 }),
+    );
+    const result = await invoke([
+      'issue',
+      'create',
+      ...connection(server),
+      '--title',
+      'Scheduler stalls',
+      '--label',
+      'owner',
+    ]);
+    expect(result.exitCode).toBe(1);
+    expect(parseJson(result.output)).toMatchObject({ code: 'API_ERROR' });
+    expect(server.requests.some((request) => request.method === 'POST')).toBe(
+      false,
+    );
   });
 });

@@ -545,7 +545,7 @@ Usage:
   forgejo-axi issue list --repo OWNER/REPO [--state open|closed|all] [--label NAMES] [--assignee USER] [--milestone NAME] [--limit N|--full] [--fields LIST|all] [connection flags]
 
 Flags:
-  --label NAMES      Comma-separated label names; every name must exist
+  --label NAMES      Comma-separated repository or organization label names; every name must exist
   --assignee USER    Only issues assigned to this user
   --milestone NAME   Only issues in this milestone
   --fields LIST      Comma-separated identity fields; defaults to number,title,state,labels
@@ -610,7 +610,7 @@ Usage:
   forgejo-axi issue create --repo OWNER/REPO --title TITLE [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME] [connection flags]
 
 Flags:
-  --label NAMES      Comma-separated label names
+  --label NAMES      Comma-separated repository or organization label names
   --assignee USERS   Comma-separated usernames
   --milestone NAME   Milestone name
 
@@ -627,7 +627,7 @@ Usage:
   forgejo-axi issue edit --repo OWNER/REPO NUMBER [--title TITLE] [--body BODY] [--label NAMES] [--assignee USERS] [--milestone NAME] [connection flags]
 
 Flags:
-  --label NAMES      Replace the label set; empty string clears it
+  --label NAMES      Replace the label set with repository or organization labels; empty string clears it
   --assignee USERS   Replace the assignee set; empty string clears it
   --milestone NAME   Set the milestone; empty string clears it
 

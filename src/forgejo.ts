@@ -1062,7 +1062,7 @@ export class ForgejoService {
     };
   }
 
-  /** Resolve a repository label by name; shared by every name-addressed command. */
+  /** Resolve a repository label by name for the label family, which manages repository labels only. */
   async resolveLabel(
     repo: RepositoryRef,
     name: string,
@@ -1137,7 +1137,13 @@ export class ForgejoService {
     return { deleted: true, label };
   }
 
-  /** Resolve every requested label name in one label fetch. */
+  /**
+   * Resolve every label name an issue carries. Forgejo takes organization label
+   * ids in the same list as repository ones, so a name the repository lacks is
+   * looked up among the owning organization's labels. A repository label wins
+   * over an organization label of the same name, and the organization is only
+   * asked when the repository leaves a name unresolved.
+   */
   async resolveLabels(
     repo: RepositoryRef,
     names: readonly string[],
@@ -1145,7 +1151,39 @@ export class ForgejoService {
     if (names.length === 0) return [];
     const page = await this.listLabels(repo);
     const lookup = labelLookup(repo);
-    return names.map((name) => requireNamed(page, name, lookup));
+    const local = names.map((name) => matchNamed(page, name, lookup));
+    if (!page.complete) throw namedSearchIncomplete(page, lookup);
+    if (local.every((label) => label !== null)) return local;
+    const owner = await this.listOwnerLabels(repo);
+    return names.map(
+      (name, index) => local[index] ?? requireOwnerLabel(repo, owner, name),
+    );
+  }
+
+  private async listOwnerLabels(repo: RepositoryRef): Promise<OwnerLabels> {
+    try {
+      const page = await this.http.paginate<ApiLabel>(
+        `${orgPath(repo)}/labels`,
+      );
+      return {
+        kind: 'labels',
+        page: {
+          ...page,
+          items: page.items.map((item) =>
+            normalizeLabel(this.config, repo, item, 'organization'),
+          ),
+        },
+      };
+    } catch (error) {
+      if (error instanceof ForgejoAxiError) {
+        // Forgejo answers 404 when the owner is a user rather than an organization.
+        if (error.code === 'NOT_FOUND') return { kind: 'user' };
+        // Organization routes need the token's organization scope, which a
+        // token scoped to repositories and issues lacks.
+        if (error.code === 'FORBIDDEN') return { kind: 'forbidden' };
+      }
+      throw error;
+    }
   }
 
   async resolveMilestone(
@@ -1978,6 +2016,10 @@ export function pageInfo<T>(page: Paginated<T>, displayed: number): PageInfo {
   };
 }
 
+function orgPath(repo: RepositoryRef): string {
+  return `orgs/${encodeURIComponent(repo.owner)}`;
+}
+
 function repoPath(repo: RepositoryRef): string {
   return `repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
 }
@@ -2309,15 +2351,20 @@ function normalizeLabel(
   config: ConnectionConfig,
   repo: RepositoryRef,
   label: ApiLabel,
+  scope: 'repository' | 'organization' = 'repository',
 ): LabelIdentity {
   const id = requireId(label.id, 'Forgejo label response omitted a valid id');
+  const base =
+    scope === 'repository'
+      ? canonicalRepoApiUrl(config, repo)
+      : canonical(appendPath(config.apiUrl, orgPath(repo)));
   return {
     id,
     name: label.name ?? '',
     color: normalizeLabelColor(label.color),
     description: label.description ?? '',
     is_archived: label.is_archived ?? false,
-    api_url: `${canonicalRepoApiUrl(config, repo)}/labels/${label.id}`,
+    api_url: `${base}/labels/${label.id}`,
   };
 }
 
@@ -2550,24 +2597,76 @@ interface NamedIdentity {
 /** How one kind of name-addressed entity reports a failed lookup. */
 interface NameLookup {
   code: 'LABEL' | 'MILESTONE';
+  /** Who owns the searched set, as the subject of the error message. */
+  scope: 'Repository' | 'Organization';
   noun: string;
   hint: string;
 }
 
+/** What the repository owner's organization label set answered. */
+type OwnerLabels =
+  | { kind: 'labels'; page: Paginated<LabelIdentity> }
+  | { kind: 'user' }
+  | { kind: 'forbidden' };
+
 function labelLookup(repo: RepositoryRef): NameLookup {
   return {
     code: 'LABEL',
+    scope: 'Repository',
     noun: 'label',
     hint: `Run \`forgejo-axi label list --repo ${repo.fullName}\``,
+  };
+}
+
+function orgLabelLookup(repo: RepositoryRef): NameLookup {
+  return {
+    code: 'LABEL',
+    scope: 'Organization',
+    noun: 'label',
+    hint: `Run \`forgejo-axi api GET ${orgPath(repo)}/labels --paginate\``,
   };
 }
 
 function milestoneLookup(repo: RepositoryRef): NameLookup {
   return {
     code: 'MILESTONE',
+    scope: 'Repository',
     noun: 'milestone',
     hint: `Run \`forgejo-axi api GET repos/${repo.fullName}/milestones\``,
   };
+}
+
+/**
+ * Resolve a name the repository does not carry among its owner's organization
+ * labels. A name found nowhere keeps the repository wording, since the
+ * repository is what the caller addressed; the hints and details say what else
+ * was searched, or that the organization could not be.
+ */
+function requireOwnerLabel(
+  repo: RepositoryRef,
+  owner: OwnerLabels,
+  name: string,
+): LabelIdentity {
+  const repoLookup = labelLookup(repo);
+  if (owner.kind === 'labels') {
+    const lookup = orgLabelLookup(repo);
+    const match = matchNamed(owner.page, name, lookup);
+    if (!owner.page.complete) throw namedSearchIncomplete(owner.page, lookup);
+    if (match) return match;
+    throw nameNotFound(repoLookup, name, {
+      suggestions: [repoLookup.hint, lookup.hint],
+    });
+  }
+  if (owner.kind === 'forbidden') {
+    throw nameNotFound(repoLookup, name, {
+      details: { organization_labels: 'forbidden' },
+      suggestions: [
+        repoLookup.hint,
+        `If ${repo.owner} is an organization, grant the token the read:organization scope so its labels can be resolved`,
+      ],
+    });
+  }
+  throw nameNotFound(repoLookup, name);
 }
 
 function matchNamed<T extends NamedIdentity>(
@@ -2578,7 +2677,7 @@ function matchNamed<T extends NamedIdentity>(
   const matches = page.items.filter((item) => item.name === name);
   if (matches.length > 1) {
     throw new ForgejoAxiError(
-      `Repository has ${matches.length} ${lookup.noun}s named ${name}`,
+      `${lookup.scope} has ${matches.length} ${lookup.noun}s named ${name}`,
       `${lookup.code}_AMBIGUOUS`,
       {
         details: { name, ids: matches.map((item) => item.id) },
@@ -2599,10 +2698,22 @@ function requireNamed<T extends NamedIdentity>(
   // An incomplete search cannot prove the match is the only one carrying the name.
   if (!page.complete) throw namedSearchIncomplete(page, lookup);
   if (match) return match;
-  throw new ForgejoAxiError(
-    `Repository has no ${lookup.noun} named ${name}`,
+  throw nameNotFound(lookup, name);
+}
+
+function nameNotFound(
+  lookup: NameLookup,
+  name: string,
+  extra: { details?: Record<string, unknown>; suggestions?: string[] } = {},
+): ForgejoAxiError {
+  return new ForgejoAxiError(
+    `${lookup.scope} has no ${lookup.noun} named ${name}`,
     `${lookup.code}_NOT_FOUND`,
-    { details: { name }, suggestions: [lookup.hint], usage: true },
+    {
+      details: { name, ...extra.details },
+      suggestions: extra.suggestions ?? [lookup.hint],
+      usage: true,
+    },
   );
 }
 
@@ -2611,11 +2722,13 @@ function namedSearchIncomplete(
   lookup: NameLookup,
 ): ForgejoAxiError {
   return new ForgejoAxiError(
-    `Repository ${lookup.noun} search reached the pagination safety ceiling`,
+    `${lookup.scope} ${lookup.noun} search reached the pagination safety ceiling`,
     'PAGINATION_INCOMPLETE',
     {
       details: { pages: page.pages, fetched: page.items.length },
-      suggestions: [`Reduce the repository ${lookup.noun} count and retry`],
+      suggestions: [
+        `Reduce the ${lookup.scope.toLowerCase()} ${lookup.noun} count and retry`,
+      ],
     },
   );
 }

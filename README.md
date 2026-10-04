@@ -120,7 +120,7 @@ forgejo-axi issue close --repo owner/repo 7 --comment 'Fixed in #42'
 forgejo-axi issue reopen --repo owner/repo 7
 ```
 
-Labels and milestones are addressed by name and resolved before anything is mutated, so an unknown name is a usage error rather than a half-applied edit or a filter Forgejo silently drops; assignee usernames go to Forgejo, which validates them. `issue list` returns issues only; `pr list` covers pull requests. `issue edit` sends only the fields that differ and reports `updated=false` when there is nothing to change. `issue close --comment` posts the comment before the state change. `issue comment` also accepts a pull request number, because Forgejo serves pull request discussion through the same endpoint.
+Labels and milestones are addressed by name and resolved before anything is mutated, so an unknown name is a usage error rather than a half-applied edit or a filter Forgejo silently drops; assignee usernames go to Forgejo, which validates them. Issue label names resolve against the repository's labels first and then the owning organization's, so an organization label works on `--label` too. `issue list` returns issues only; `pr list` covers pull requests. `issue edit` sends only the fields that differ and reports `updated=false` when there is nothing to change. `issue close --comment` posts the comment before the state change. `issue comment` also accepts a pull request number, because Forgejo serves pull request discussion through the same endpoint.
 
 ## Raw API and capabilities
 
